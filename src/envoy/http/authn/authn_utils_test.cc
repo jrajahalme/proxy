@@ -27,7 +27,6 @@ namespace Istio {
 namespace AuthN {
 namespace {
 
-const LowerCaseString kSecIstioAuthUserInfoHeaderKey("sec-istio-auth-userinfo");
 const std::string kSecIstioAuthUserinfoHeaderValue =
     R"(
      {
@@ -58,118 +57,274 @@ const std::string kSecIstioAuthUserInfoHeaderWithTwoAudValue =
        }
      )";
 
-Http::TestHeaderMapImpl CreateTestHeaderMap(const LowerCaseString& header_key,
-                                            const std::string& header_value) {
-  // The base64 encoding is done through Base64::encode().
-  // If the test input has special chars, may need to use the counterpart of
-  // Base64UrlDecode().
-  std::string value_base64 =
-      Base64::encode(header_value.c_str(), header_value.size());
-  return Http::TestHeaderMapImpl{{header_key.get(), value_base64}};
-}
-
 TEST(AuthnUtilsTest, GetJwtPayloadFromHeaderTest) {
   JwtPayload payload, expected_payload;
-  Http::TestHeaderMapImpl request_headers_with_jwt = CreateTestHeaderMap(
-      kSecIstioAuthUserInfoHeaderKey, kSecIstioAuthUserinfoHeaderValue);
   ASSERT_TRUE(Protobuf::TextFormat::ParseFromString(
       R"(
       user: "issuer@foo.com/sub@foo.com"
       audiences: ["aud1"]
-      claims {
-        key: "aud"
-        value: "aud1"
-      }
-      claims {
-        key: "iss"
-        value: "issuer@foo.com"
-      }
-      claims {
-        key: "sub"
-        value: "sub@foo.com"
-      }
-      claims {
-        key: "some-other-string-claims"
-        value: "some-claims-kept"
+      claims: {
+        fields: {
+          key: "aud"
+          value: {
+            list_value: {
+              values: {
+                string_value: "aud1"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "iss"
+          value: {
+            list_value: {
+              values: {
+                string_value: "issuer@foo.com"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "sub"
+          value: {
+            list_value: {
+              values: {
+                string_value: "sub@foo.com"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "some-other-string-claims"
+          value: {
+            list_value: {
+              values: {
+                string_value: "some-claims-kept"
+              }
+            }
+          }
+        }
       }
       raw_claims: ")" +
           StringUtil::escape(kSecIstioAuthUserinfoHeaderValue) + R"(")",
       &expected_payload));
-  // The payload returned from GetJWTPayloadFromHeaders() should be the same as
+  // The payload returned from ProcessJwtPayload() should be the same as
   // the expected.
-  bool ret = AuthnUtils::GetJWTPayloadFromHeaders(
-      request_headers_with_jwt, kSecIstioAuthUserInfoHeaderKey, &payload);
+  bool ret =
+      AuthnUtils::ProcessJwtPayload(kSecIstioAuthUserinfoHeaderValue, &payload);
   EXPECT_TRUE(ret);
   EXPECT_TRUE(MessageDifferencer::Equals(expected_payload, payload));
 }
 
-TEST(AuthnUtilsTest, GetJwtPayloadFromHeaderWithNoAudTest) {
+TEST(AuthnUtilsTest, ProcessJwtPayloadWithNoAudTest) {
   JwtPayload payload, expected_payload;
-  Http::TestHeaderMapImpl request_headers_with_jwt =
-      CreateTestHeaderMap(kSecIstioAuthUserInfoHeaderKey,
-                          kSecIstioAuthUserInfoHeaderWithNoAudValue);
   ASSERT_TRUE(Protobuf::TextFormat::ParseFromString(
       R"(
       user: "issuer@foo.com/sub@foo.com"
-      claims {
-        key: "iss"
-        value: "issuer@foo.com"
-      }
-      claims {
-        key: "sub"
-        value: "sub@foo.com"
-      }
-      claims {
-        key: "some-other-string-claims"
-        value: "some-claims-kept"
+      claims: {
+        fields: {
+          key: "iss"
+          value: {
+            list_value: {
+              values: {
+                string_value: "issuer@foo.com"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "sub"
+          value: {
+            list_value: {
+              values: {
+                string_value: "sub@foo.com"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "some-other-string-claims"
+          value: {
+            list_value: {
+              values: {
+                string_value: "some-claims-kept"
+              }
+            }
+          }
+        }
       }
       raw_claims: ")" +
           StringUtil::escape(kSecIstioAuthUserInfoHeaderWithNoAudValue) +
           R"(")",
       &expected_payload));
-  // The payload returned from GetJWTPayloadFromHeaders() should be the same as
+  // The payload returned from ProcessJwtPayload() should be the same as
   // the expected. When there is no aud,  the aud is not saved in the payload
   // and claims.
-  bool ret = AuthnUtils::GetJWTPayloadFromHeaders(
-      request_headers_with_jwt, kSecIstioAuthUserInfoHeaderKey, &payload);
+  bool ret = AuthnUtils::ProcessJwtPayload(
+      kSecIstioAuthUserInfoHeaderWithNoAudValue, &payload);
   EXPECT_TRUE(ret);
   EXPECT_TRUE(MessageDifferencer::Equals(expected_payload, payload));
 }
 
-TEST(AuthnUtilsTest, GetJwtPayloadFromHeaderWithTwoAudTest) {
+TEST(AuthnUtilsTest, ProcessJwtPayloadWithTwoAudTest) {
   JwtPayload payload, expected_payload;
-  Http::TestHeaderMapImpl request_headers_with_jwt =
-      CreateTestHeaderMap(kSecIstioAuthUserInfoHeaderKey,
-                          kSecIstioAuthUserInfoHeaderWithTwoAudValue);
   ASSERT_TRUE(Protobuf::TextFormat::ParseFromString(
       R"(
       user: "issuer@foo.com/sub@foo.com"
       audiences: "aud1"
       audiences: "aud2"
-      claims {
-        key: "iss"
-        value: "issuer@foo.com"
-      }
-      claims {
-        key: "sub"
-        value: "sub@foo.com"
-      }
-      claims {
-        key: "some-other-string-claims"
-        value: "some-claims-kept"
+      claims: {
+        fields: {
+          key: "aud"
+          value: {
+            list_value: {
+              values: {
+                string_value: "aud1"
+              }
+              values: {
+                string_value: "aud2"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "iss"
+          value: {
+            list_value: {
+              values: {
+                string_value: "issuer@foo.com"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "sub"
+          value: {
+            list_value: {
+              values: {
+                string_value: "sub@foo.com"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "some-other-string-claims"
+          value: {
+            list_value: {
+              values: {
+                string_value: "some-claims-kept"
+              }
+            }
+          }
+        }
       }
       raw_claims: ")" +
           StringUtil::escape(kSecIstioAuthUserInfoHeaderWithTwoAudValue) +
           R"(")",
       &expected_payload));
-
-  // The payload returned from GetJWTPayloadFromHeaders() should be the same as
+  // The payload returned from ProcessJwtPayload() should be the same as
   // the expected. When the aud is a string array, the aud is not saved in the
   // claims.
-  bool ret = AuthnUtils::GetJWTPayloadFromHeaders(
-      request_headers_with_jwt, kSecIstioAuthUserInfoHeaderKey, &payload);
+  bool ret = AuthnUtils::ProcessJwtPayload(
+      kSecIstioAuthUserInfoHeaderWithTwoAudValue, &payload);
+
   EXPECT_TRUE(ret);
   EXPECT_TRUE(MessageDifferencer::Equals(expected_payload, payload));
+}
+
+TEST(AuthnUtilsTest, MatchString) {
+  iaapi::StringMatch match;
+  EXPECT_FALSE(AuthnUtils::MatchString(nullptr, match));
+  EXPECT_FALSE(AuthnUtils::MatchString("", match));
+
+  match.set_exact("exact");
+  EXPECT_TRUE(AuthnUtils::MatchString("exact", match));
+  EXPECT_FALSE(AuthnUtils::MatchString("exac", match));
+  EXPECT_FALSE(AuthnUtils::MatchString("exacy", match));
+
+  match.set_prefix("prefix");
+  EXPECT_TRUE(AuthnUtils::MatchString("prefix-1", match));
+  EXPECT_TRUE(AuthnUtils::MatchString("prefix", match));
+  EXPECT_FALSE(AuthnUtils::MatchString("prefi", match));
+  EXPECT_FALSE(AuthnUtils::MatchString("prefiy", match));
+
+  match.set_suffix("suffix");
+  EXPECT_TRUE(AuthnUtils::MatchString("1-suffix", match));
+  EXPECT_TRUE(AuthnUtils::MatchString("suffix", match));
+  EXPECT_FALSE(AuthnUtils::MatchString("suffi", match));
+  EXPECT_FALSE(AuthnUtils::MatchString("suffiy", match));
+
+  match.set_regex(".+abc.+");
+  EXPECT_TRUE(AuthnUtils::MatchString("1-abc-1", match));
+  EXPECT_FALSE(AuthnUtils::MatchString("1-abc", match));
+  EXPECT_FALSE(AuthnUtils::MatchString("abc-1", match));
+  EXPECT_FALSE(AuthnUtils::MatchString("1-ac-1", match));
+}
+
+TEST(AuthnUtilsTest, ShouldValidateJwtPerPathExcluded) {
+  iaapi::Jwt jwt;
+
+  // Create a rule that triggers on everything except /good-x and /allow-x.
+  auto* rule = jwt.add_trigger_rules();
+  rule->add_excluded_paths()->set_exact("/good-x");
+  rule->add_excluded_paths()->set_exact("/allow-x");
+  EXPECT_FALSE(AuthnUtils::ShouldValidateJwtPerPath("/good-x", jwt));
+  EXPECT_FALSE(AuthnUtils::ShouldValidateJwtPerPath("/allow-x", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/good-1", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/allow-1", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/other", jwt));
+
+  // Change the rule to only triggers on prefix /good and /allow.
+  rule->add_included_paths()->set_prefix("/good");
+  rule->add_included_paths()->set_prefix("/allow");
+  EXPECT_FALSE(AuthnUtils::ShouldValidateJwtPerPath("/good-x", jwt));
+  EXPECT_FALSE(AuthnUtils::ShouldValidateJwtPerPath("/allow-x", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/good-1", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/allow-1", jwt));
+  EXPECT_FALSE(AuthnUtils::ShouldValidateJwtPerPath("/other", jwt));
+}
+
+TEST(AuthnUtilsTest, ShouldValidateJwtPerPathIncluded) {
+  iaapi::Jwt jwt;
+
+  // Create a rule that triggers on everything with prefix /good and /allow.
+  auto* rule = jwt.add_trigger_rules();
+  rule->add_included_paths()->set_prefix("/good");
+  rule->add_included_paths()->set_prefix("/allow");
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/good-x", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/allow-x", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/good-2", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/allow-1", jwt));
+  EXPECT_FALSE(AuthnUtils::ShouldValidateJwtPerPath("/other", jwt));
+
+  // Change the rule to also exclude /allow-x and /good-x.
+  rule->add_excluded_paths()->set_exact("/good-x");
+  rule->add_excluded_paths()->set_exact("/allow-x");
+  EXPECT_FALSE(AuthnUtils::ShouldValidateJwtPerPath("/good-x", jwt));
+  EXPECT_FALSE(AuthnUtils::ShouldValidateJwtPerPath("/allow-x", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/good-2", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/allow-1", jwt));
+  EXPECT_FALSE(AuthnUtils::ShouldValidateJwtPerPath("/other", jwt));
+}
+
+TEST(AuthnUtilsTest, ShouldValidateJwtPerPathDefault) {
+  iaapi::Jwt jwt;
+
+  // Always trigger when path is unavailable.
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath(nullptr, jwt));
+
+  // Always trigger when there is no rules in jwt.
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/test", jwt));
+
+  // Add a rule that triggers on everything except /hello.
+  jwt.add_trigger_rules()->add_excluded_paths()->set_exact("/hello");
+  EXPECT_FALSE(AuthnUtils::ShouldValidateJwtPerPath("/hello", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/other", jwt));
+
+  // Add another rule that triggers on path /hello.
+  jwt.add_trigger_rules()->add_included_paths()->set_exact("/hello");
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/hello", jwt));
+  EXPECT_TRUE(AuthnUtils::ShouldValidateJwtPerPath("/other", jwt));
 }
 
 }  // namespace

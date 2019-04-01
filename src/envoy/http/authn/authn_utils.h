@@ -15,10 +15,14 @@
 
 #pragma once
 
+#include "authentication/v1alpha1/policy.pb.h"
 #include "common/common/logger.h"
+#include "common/common/utility.h"
 #include "envoy/http/header_map.h"
 #include "envoy/json/json_object.h"
 #include "src/istio/authn/context.pb.h"
+
+namespace iaapi = istio::authentication::v1alpha1;
 
 namespace Envoy {
 namespace Http {
@@ -28,12 +32,26 @@ namespace AuthN {
 // AuthnUtils class provides utility functions used for authentication.
 class AuthnUtils : public Logger::Loggable<Logger::Id::filter> {
  public:
-  // Retrieve the JWT payload from the HTTP header into the output payload map
-  // Return true if parsing the header payload key succeeds.
-  // Otherwise, return false.
-  static bool GetJWTPayloadFromHeaders(const HeaderMap& headers,
-                                       const LowerCaseString& jwt_payload_key,
-                                       istio::authn::JwtPayload* payload);
+  // Parse JWT payload string (which typically is the output from jwt filter)
+  // and populate JwtPayload object. Return true if input string can be parsed
+  // successfully. Otherwise, return false.
+  static bool ProcessJwtPayload(const std::string& jwt_payload_str,
+                                istio::authn::JwtPayload* payload);
+
+  // Parses the original_payload in an exchanged JWT.
+  // Returns true if original_payload can be
+  // parsed successfully. Otherwise, returns false.
+  static bool ExtractOriginalPayload(const std::string& token,
+                                     std::string* original_payload);
+
+  // Returns true if str is matched to match.
+  static bool MatchString(const char* const str,
+                          const iaapi::StringMatch& match);
+
+  // Returns true if the jwt should be validated. It will check if the request
+  // path is matched to the trigger rule in the jwt.
+  static bool ShouldValidateJwtPerPath(const char* const path,
+                                       const iaapi::Jwt& jwt);
 };
 
 }  // namespace AuthN

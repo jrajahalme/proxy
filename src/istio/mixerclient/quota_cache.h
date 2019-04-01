@@ -22,8 +22,10 @@
 #include <string>
 #include <unordered_map>
 
-#include "include/istio/mixerclient/client.h"
+#include "google/protobuf/stubs/status.h"
+#include "include/istio/mixerclient/options.h"
 #include "include/istio/prefetch/quota_prefetch.h"
+#include "include/istio/quota_config/requirement.h"
 #include "include/istio/utils/simple_lru_cache.h"
 #include "include/istio/utils/simple_lru_cache_inl.h"
 #include "src/istio/mixerclient/referenced.h"
@@ -57,7 +59,7 @@ class QuotaCache {
 
     bool IsCacheHit() const;
 
-    ::google::protobuf::util::Status status() const { return status_; }
+    const ::google::protobuf::util::Status& status() const { return status_; }
 
     void SetResponse(const ::google::protobuf::util::Status& status,
                      const ::istio::mixer::v1::Attributes& attributes,
@@ -140,7 +142,7 @@ class QuotaCache {
     std::unique_ptr<CacheElem> pending_item;
 
     // Referenced map keyed with their hashes
-    std::unordered_map<std::string, Referenced> referenced_map;
+    std::unordered_map<utils::HashType, Referenced> referenced_map;
   };
 
   // Set a quota response.
@@ -154,7 +156,7 @@ class QuotaCache {
 
   // Key is the signature of the Attributes. Value is the CacheElem.
   // It is a LRU cache with MaxIdelTime as response_expiration_time.
-  using QuotaLRUCache = utils::SimpleLRUCache<std::string, CacheElem>;
+  using QuotaLRUCache = utils::SimpleLRUCache<utils::HashType, CacheElem>;
 
   // The quota options.
   QuotaOptions options_;

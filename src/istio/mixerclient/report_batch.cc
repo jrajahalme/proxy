@@ -15,6 +15,8 @@
 
 #include "src/istio/mixerclient/report_batch.h"
 #include "include/istio/utils/protobuf.h"
+#include "src/istio/mixerclient/status_util.h"
+#include "src/istio/utils/logger.h"
 
 using ::google::protobuf::util::Status;
 using ::google::protobuf::util::error::Code;
@@ -25,6 +27,9 @@ using ::istio::mixer::v1::ReportResponse;
 namespace istio {
 namespace mixerclient {
 
+static std::atomic<uint32_t> REPORT_FAIL_LOG_MESSAGES{0};
+static constexpr uint32_t REPORT_FAIL_LOG_MODULUS{100};
+
 ReportBatch::ReportBatch(const ReportOptions& options,
                          TransportReportFunc transport,
                          TimerCreateFunc timer_create,
@@ -33,25 +38,17 @@ ReportBatch::ReportBatch(const ReportOptions& options,
       transport_(transport),
       timer_create_(timer_create),
       compressor_(compressor),
+      batch_compressor_(compressor.CreateBatchCompressor()),
       total_report_calls_(0),
       total_remote_report_calls_(0) {}
 
 ReportBatch::~ReportBatch() { Flush(); }
 
-void ReportBatch::Report(const Attributes& request) {
+void ReportBatch::Report(
+    const istio::mixerclient::SharedAttributesSharedPtr& attributes) {
   std::lock_guard<std::mutex> lock(mutex_);
   ++total_report_calls_;
-  if (!batch_compressor_) {
-    batch_compressor_ = compressor_.CreateBatchCompressor();
-  }
-
-  if (!batch_compressor_->Add(request)) {
-    FlushWithLock();
-
-    batch_compressor_ = compressor_.CreateBatchCompressor();
-    batch_compressor_->Add(request);
-  }
-
+  batch_compressor_->Add(*attributes->attributes());
   if (batch_compressor_->size() >= options_.max_batch_entries) {
     FlushWithLock();
   } else {
@@ -65,27 +62,58 @@ void ReportBatch::Report(const Attributes& request) {
 }
 
 void ReportBatch::FlushWithLock() {
-  if (!batch_compressor_) {
+  if (batch_compressor_->size() == 0) {
     return;
   }
 
-  ++total_remote_report_calls_;
-  std::unique_ptr<ReportRequest> request = batch_compressor_->Finish();
-  batch_compressor_.reset();
   if (timer_) {
     timer_->Stop();
   }
 
-  ReportResponse* response = new ReportResponse;
-  transport_(*request, response, [this, response](const Status& status) {
-    delete response;
+  ++total_remote_report_calls_;
+  auto request = batch_compressor_->Finish();
+  std::shared_ptr<ReportResponse> response{new ReportResponse()};
+
+  // TODO(jblatt) I replaced a ReportResponse raw pointer with a shared
+  // pointer so at least the memory will be freed if this lambda is deleted
+  // without being called, but really this should be a unique_ptr that is
+  // moved into the transport_ and then moved into the lambda if invoked.
+  transport_(request, &*response, [this, response](const Status& status) {
+    //
+    // Classify and track transport errors
+    //
+
+    TransportResult result = TransportStatus(status);
+
+    switch (result) {
+      case TransportResult::SUCCESS:
+        ++total_remote_report_successes_;
+        break;
+      case TransportResult::RESPONSE_TIMEOUT:
+        ++total_remote_report_timeouts_;
+        break;
+      case TransportResult::SEND_ERROR:
+        ++total_remote_report_send_errors_;
+        break;
+      case TransportResult::OTHER:
+        ++total_remote_report_other_errors_;
+        break;
+    }
+
     if (!status.ok()) {
-      GOOGLE_LOG(ERROR) << "Mixer Report failed with: " << status.ToString();
+      if (MIXER_WARN_ENABLED &&
+          0 == REPORT_FAIL_LOG_MESSAGES++ % REPORT_FAIL_LOG_MODULUS) {
+        MIXER_WARN("Mixer Report failed with: %s", status.ToString().c_str());
+      } else {
+        MIXER_DEBUG("Mixer Report failed with: %s", status.ToString().c_str());
+      }
       if (utils::InvalidDictionaryStatus(status)) {
         compressor_.ShrinkGlobalDictionary();
       }
     }
   });
+
+  batch_compressor_->Clear();
 }
 
 void ReportBatch::Flush() {

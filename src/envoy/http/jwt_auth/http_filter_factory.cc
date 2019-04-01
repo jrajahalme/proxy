@@ -13,13 +13,14 @@
  * limitations under the License.
  */
 
-#include "envoy/config/filter/http/jwt_authn/v2alpha/config.pb.validate.h"
 #include "envoy/registry/registry.h"
 #include "google/protobuf/util/json_util.h"
 #include "src/envoy/http/jwt_auth/auth_store.h"
 #include "src/envoy/http/jwt_auth/http_filter.h"
+#include "src/envoy/utils/filter_names.h"
 
-using ::envoy::config::filter::http::jwt_authn::v2alpha::JwtAuthentication;
+using ::istio::envoy::config::filter::http::jwt_auth::v2alpha1::
+    JwtAuthentication;
 
 namespace Envoy {
 namespace Server {
@@ -38,17 +39,15 @@ class JwtVerificationFilterConfig : public NamedHttpFilterConfigFactory {
   Http::FilterFactoryCb createFilterFactoryFromProto(
       const Protobuf::Message& proto_config, const std::string&,
       FactoryContext& context) override {
-    return createFilter(
-        MessageUtil::downcastAndValidate<const JwtAuthentication&>(
-            proto_config),
-        context);
+    return createFilter(dynamic_cast<const JwtAuthentication&>(proto_config),
+                        context);
   }
 
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
     return ProtobufTypes::MessagePtr{new JwtAuthentication};
   }
 
-  std::string name() override { return "jwt-auth"; }
+  std::string name() override { return Utils::IstioFilterName::kJwt; }
 
  private:
   Http::FilterFactoryCb createFilter(const JwtAuthentication& proto_config,

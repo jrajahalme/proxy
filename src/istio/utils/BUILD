@@ -1,4 +1,4 @@
-# Copyright 2017 Istio Authors. All Rights Reserved.
+# Copyright 2018 Istio Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,23 +17,33 @@ licenses(["notice"])
 cc_library(
     name = "utils_lib",
     srcs = [
+        "local_attributes.cc",
+        "logger.cc",
         "protobuf.cc",
         "status.cc",
+        "utils.cc",
+    ],
+    hdrs = [
+        "logger.h",
+        "utils.h",
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":attribute_names_lib",
+        "//external:mixer_client_config_cc_proto",
         "//external:protobuf",
+        "//include/istio/utils:attribute_names_header",
         "//include/istio/utils:headers_lib",
     ],
 )
 
-cc_library(
-    name = "md5_lib",
-    srcs = ["md5.cc"],
-    visibility = ["//visibility:public"],
+cc_test(
+    name = "utils_test",
+    size = "small",
+    srcs = ["utils_test.cc"],
     deps = [
-        "//external:boringssl_crypto",
-        "//include/istio/utils:headers_lib",
+        ":utils_lib",
+        "//external:googletest_main",
     ],
 )
 
@@ -53,16 +63,22 @@ cc_test(
 )
 
 cc_test(
-    name = "md5_test",
+    name = "logger_test",
     size = "small",
-    srcs = ["md5_test.cc"],
-    linkopts = [
-        "-lm",
-        "-lpthread",
-    ],
-    linkstatic = 1,
+    srcs = ["logger_test.cc"],
     deps = [
-        ":md5_lib",
+        ":utils_lib",
         "//external:googletest_main",
+    ],
+)
+
+cc_library(
+    name = "attribute_names_lib",
+    srcs = [
+        "attribute_names.cc",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//include/istio/utils:attribute_names_header",
     ],
 )

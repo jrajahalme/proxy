@@ -20,6 +20,7 @@
 #include "src/envoy/http/authn/origin_authenticator.h"
 #include "src/envoy/http/authn/peer_authenticator.h"
 #include "src/envoy/utils/authn.h"
+#include "src/envoy/utils/filter_names.h"
 #include "src/envoy/utils/utils.h"
 
 using istio::authn::Payload;
@@ -43,31 +44,25 @@ void AuthenticationFilter::onDestroy() {
 
 FilterHeadersStatus AuthenticationFilter::decodeHeaders(HeaderMap& headers,
                                                         bool) {
-  ENVOY_LOG(debug, "Called AuthenticationFilter : {}", __func__);
+  ENVOY_LOG(debug, "AuthenticationFilter::decodeHeaders with config\n{}",
+            filter_config_.DebugString());
   state_ = State::PROCESSING;
 
   filter_context_.reset(new Istio::AuthN::FilterContext(
-      &headers, decoder_callbacks_->connection(), filter_config_));
+      decoder_callbacks_->streamInfo().dynamicMetadata(), headers,
+      decoder_callbacks_->connection(), filter_config_));
 
   Payload payload;
 
-  if (!filter_config_.policy().peer_is_optional() &&
-      !createPeerAuthenticator(filter_context_.get())->run(&payload)) {
+  if (!createPeerAuthenticator(filter_context_.get())->run(&payload) &&
+      !filter_config_.policy().peer_is_optional()) {
     rejectRequest("Peer authentication failed.");
     return FilterHeadersStatus::StopIteration;
   }
 
   bool success =
-      filter_config_.policy().origin_is_optional() ||
-      createOriginAuthenticator(filter_context_.get())->run(&payload);
-
-  // After Istio authn, the JWT headers consumed by Istio authn should be
-  // removed.
-  // TODO: remove internal headers used to pass data between filters
-  // https://github.com/istio/istio/issues/4689
-  for (auto const iter : filter_config_.jwt_output_payload_locations()) {
-    filter_context_->headers()->remove(LowerCaseString(iter.second));
-  }
+      createOriginAuthenticator(filter_context_.get())->run(&payload) ||
+      filter_config_.policy().origin_is_optional();
 
   if (!success) {
     rejectRequest("Origin authentication failed.");
@@ -76,18 +71,20 @@ FilterHeadersStatus AuthenticationFilter::decodeHeaders(HeaderMap& headers,
 
   // Put authentication result to headers.
   if (filter_context_ != nullptr) {
-    Utils::Authentication::SaveResultToHeader(
-        filter_context_->authenticationResult(), filter_context_->headers());
+    // Save auth results in the metadata, could be used later by RBAC and/or
+    // mixer filter.
+    ProtobufWkt::Struct data;
+    Utils::Authentication::SaveAuthAttributesToStruct(
+        filter_context_->authenticationResult(), data);
+    decoder_callbacks_->streamInfo().setDynamicMetadata(
+        Utils::IstioFilterName::kAuthentication, data);
+    ENVOY_LOG(debug, "Saved Dynamic Metadata:\n{}", data.DebugString());
   }
   state_ = State::COMPLETE;
   return FilterHeadersStatus::Continue;
 }
 
 FilterDataStatus AuthenticationFilter::decodeData(Buffer::Instance&, bool) {
-  ENVOY_LOG(debug, "Called AuthenticationFilter : {}", __func__);
-  ENVOY_LOG(debug,
-            "Called AuthenticationFilter : {} FilterDataStatus::Continue;",
-            __FUNCTION__);
   if (state_ == State::PROCESSING) {
     return FilterDataStatus::StopIterationAndWatermark;
   }
@@ -95,7 +92,6 @@ FilterDataStatus AuthenticationFilter::decodeData(Buffer::Instance&, bool) {
 }
 
 FilterTrailersStatus AuthenticationFilter::decodeTrailers(HeaderMap&) {
-  ENVOY_LOG(debug, "Called AuthenticationFilter : {}", __func__);
   if (state_ == State::PROCESSING) {
     return FilterTrailersStatus::StopIteration;
   }
@@ -104,18 +100,16 @@ FilterTrailersStatus AuthenticationFilter::decodeTrailers(HeaderMap&) {
 
 void AuthenticationFilter::setDecoderFilterCallbacks(
     StreamDecoderFilterCallbacks& callbacks) {
-  ENVOY_LOG(debug, "Called AuthenticationFilter : {}", __func__);
   decoder_callbacks_ = &callbacks;
 }
 
 void AuthenticationFilter::rejectRequest(const std::string& message) {
   if (state_ != State::PROCESSING) {
-    ENVOY_LOG(error, "State {} is not PROCESSING.", state_);
     return;
   }
   state_ = State::REJECTED;
-  Utility::sendLocalReply(*decoder_callbacks_, false, Http::Code::Unauthorized,
-                          message);
+  decoder_callbacks_->sendLocalReply(Http::Code::Unauthorized, message, nullptr,
+                                     absl::nullopt);
 }
 
 std::unique_ptr<Istio::AuthN::AuthenticatorBase>

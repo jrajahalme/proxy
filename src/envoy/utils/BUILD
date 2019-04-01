@@ -32,7 +32,12 @@ envoy_cc_library(
     repository = "@envoy",
     visibility = ["//visibility:public"],
     deps = [
-        "//src/istio/authn:context_proto",
+        ":filter_names_lib",
+        ":utils_lib",
+        "//include/istio/utils:attribute_names_header",
+        "//src/istio/authn:context_proto_cc",
+        "//src/istio/utils:attribute_names_lib",
+        "//src/istio/utils:utils_lib",
         "@envoy//source/exe:envoy_common_lib",
     ],
 )
@@ -49,6 +54,7 @@ envoy_cc_library(
     hdrs = [
         "config.h",
         "grpc_transport.h",
+        "header_update.h",
         "mixer_control.h",
         "stats.h",
         "utils.h",
@@ -57,6 +63,7 @@ envoy_cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//external:mixer_client_config_cc_proto",
+        "//src/istio/control/http:control_lib",
         "//src/istio/mixerclient:mixerclient_lib",
         "@envoy//source/exe:envoy_common_lib",
     ],
@@ -82,6 +89,30 @@ envoy_cc_test(
     repository = "@envoy",
     deps = [
         ":utils_lib",
+        "@envoy//test/mocks/stream_info:stream_info_mocks",
         "@envoy//test/test_common:utility_lib",
     ],
+)
+
+envoy_cc_test(
+    name = "mixer_control_test",
+    srcs = [
+        "mixer_control_test.cc",
+    ],
+    repository = "@envoy",
+    deps = [
+        ":utils_lib",
+        "@envoy//test/test_common:utility_lib",
+    ],
+)
+
+cc_library(
+    name = "filter_names_lib",
+    srcs = [
+        "filter_names.cc",
+    ],
+    hdrs = [
+        "filter_names.h",
+    ],
+    visibility = ["//visibility:public"],
 )

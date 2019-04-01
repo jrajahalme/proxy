@@ -28,7 +28,10 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//include/istio/control/tcp:headers_lib",
+        "//include/istio/utils:attribute_names_header",
         "//src/istio/control:common_lib",
+        "//src/istio/utils:attribute_names_lib",
+        "//src/istio/utils:utils_lib",
     ],
 )
 
@@ -44,6 +47,7 @@ cc_test(
     deps = [
         ":control_lib",
         "//external:googletest_main",
+        "//src/istio/utils:utils_lib",
     ],
 )
 

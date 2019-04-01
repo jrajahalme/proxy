@@ -18,7 +18,8 @@
 
 using ::google::protobuf::util::Status;
 using ::istio::mixerclient::CancelFunc;
-using ::istio::mixerclient::DoneFunc;
+using ::istio::mixerclient::CheckDoneFunc;
+using ::istio::mixerclient::CheckResponseInfo;
 using ::istio::quota_config::Requirement;
 
 namespace istio {
@@ -27,43 +28,58 @@ namespace tcp {
 
 RequestHandlerImpl::RequestHandlerImpl(
     std::shared_ptr<ClientContext> client_context)
-    : client_context_(client_context),
+    : attributes_(new istio::mixerclient::SharedAttributes()),
+      check_context_(new istio::mixerclient::CheckContext(
+          client_context->Retries(), client_context->NetworkFailOpen(),
+          attributes_)),
+      client_context_(client_context),
       last_report_info_{0ULL, 0ULL, std::chrono::nanoseconds::zero()} {}
 
-CancelFunc RequestHandlerImpl::Check(CheckData* check_data, DoneFunc on_done) {
+void RequestHandlerImpl::Check(CheckData* check_data,
+                               const CheckDoneFunc& on_done) {
   if (client_context_->enable_mixer_check() ||
       client_context_->enable_mixer_report()) {
-    client_context_->AddStaticAttributes(&request_context_);
+    client_context_->AddStaticAttributes(attributes_->attributes());
 
-    AttributesBuilder builder(&request_context_);
+    AttributesBuilder builder(attributes_->attributes());
     builder.ExtractCheckAttributes(check_data);
   }
 
   if (!client_context_->enable_mixer_check()) {
-    on_done(Status::OK);
-    return nullptr;
+    check_context_->setFinalStatus(Status::OK, false);
+    on_done(*check_context_);
+    return;
   }
 
-  client_context_->AddQuotas(&request_context_);
+  client_context_->AddQuotas(attributes_->attributes(),
+                             check_context_->quotaRequirements());
 
-  return client_context_->SendCheck(nullptr, on_done, &request_context_);
+  client_context_->SendCheck(nullptr, on_done, check_context_);
 }
 
-// Make remote report call.
-void RequestHandlerImpl::Report(ReportData* report_data) {
-  Report(report_data, /* is_final_report */ true);
+void RequestHandlerImpl::ResetCancel() {
+  if (check_context_) {
+    check_context_->resetCancel();
+  }
 }
 
-void RequestHandlerImpl::Report(ReportData* report_data, bool is_final_report) {
+void RequestHandlerImpl::CancelCheck() {
+  if (check_context_) {
+    check_context_->cancel();
+  }
+}
+
+void RequestHandlerImpl::Report(ReportData* report_data,
+                                ReportData::ConnectionEvent event) {
   if (!client_context_->enable_mixer_report()) {
     return;
   }
 
-  AttributesBuilder builder(&request_context_);
-  builder.ExtractReportAttributes(report_data, is_final_report,
+  AttributesBuilder builder(attributes_->attributes());
+  builder.ExtractReportAttributes(check_context_->status(), report_data, event,
                                   &last_report_info_);
 
-  client_context_->SendReport(request_context_);
+  client_context_->SendReport(attributes_);
 }
 
 }  // namespace tcp

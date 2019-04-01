@@ -28,16 +28,19 @@ envoy_cc_binary(
         "//src/envoy/http/authn:filter_lib",
         "//src/envoy/http/jwt_auth:http_filter_factory",
         "//src/envoy/http/mixer:filter_lib",
+        "//src/envoy/tcp/forward_downstream_sni:config_lib",
         "//src/envoy/tcp/mixer:filter_lib",
-        "//src/envoy/alts:alts_socket_factory",
+        "//src/envoy/tcp/sni_verifier:config_lib",
+        "//src/envoy/tcp/tcp_cluster_rewrite:config_lib",
         "@envoy//source/exe:envoy_main_entry_lib",
     ],
 )
 
 pkg_tar(
     name = "envoy_tar",
+    srcs = [":envoy"],
     extension = "tar.gz",
-    files = [":envoy"],
     mode = "0755",
     package_dir = "/usr/local/bin/",
+    tags = ["manual"],
 )

@@ -19,9 +19,10 @@
 namespace Envoy {
 
 namespace {
-// The HTTP header key for the JWT verification result
+// The HTTP header key for the JWT verification result. Should be the same as
+// the one define for forward_payload_header in envoy.conf.jwk
 const Http::LowerCaseString kJwtVerificationResultHeaderKey(
-    "sec-istio-auth-userinfo");
+    "test-jwt-payload-output");
 // {"iss":"https://example.com","sub":"test@example.com","aud":"example_service","exp":2001001001}
 const std::string kJwtVerificationResult =
     "eyJpc3MiOiJodHRwczovL2V4YW1wbGUuY29tIiwic3ViIjoidGVz"
@@ -35,18 +36,19 @@ class JwtVerificationFilterIntegrationTest
       public testing::TestWithParam<Network::Address::IpVersion> {
  public:
   JwtVerificationFilterIntegrationTest()
-      : HttpIntegrationTest(Http::CodecClient::Type::HTTP1, GetParam()) {}
+      : HttpIntegrationTest(Http::CodecClient::Type::HTTP1, GetParam(),
+                            realTime()) {}
   virtual ~JwtVerificationFilterIntegrationTest() {}
   /**
    * Initializer for an individual integration test.
    */
   void SetUp() override {
-    fake_upstreams_.emplace_back(
-        new FakeUpstream(0, FakeHttpConnection::Type::HTTP1, version_));
+    fake_upstreams_.emplace_back(new FakeUpstream(
+        0, FakeHttpConnection::Type::HTTP1, version_, timeSystem()));
     registerPort("upstream_0",
                  fake_upstreams_.back()->localAddress()->ip()->port());
-    fake_upstreams_.emplace_back(
-        new FakeUpstream(0, FakeHttpConnection::Type::HTTP1, version_));
+    fake_upstreams_.emplace_back(new FakeUpstream(
+        0, FakeHttpConnection::Type::HTTP1, version_, timeSystem()));
     registerPort("upstream_1",
                  fake_upstreams_.back()->localAddress()->ip()->port());
     createTestServer(ConfigPath(), {"http"});
@@ -116,8 +118,7 @@ class JwtVerificationFilterIntegrationTest
     IntegrationCodecClientPtr codec_client;
     FakeHttpConnectionPtr fake_upstream_connection_issuer;
     FakeHttpConnectionPtr fake_upstream_connection_backend;
-    IntegrationStreamDecoderPtr response(
-        new IntegrationStreamDecoder(*dispatcher_));
+    IntegrationStreamDecoderPtr response;
     FakeStreamPtr request_stream_issuer;
     FakeStreamPtr request_stream_backend;
 
@@ -125,24 +126,25 @@ class JwtVerificationFilterIntegrationTest
 
     // Send a request to Envoy.
     if (!request_body.empty()) {
-      Http::StreamEncoder& encoder =
-          codec_client->startRequest(request_headers, *response);
+      auto encoder_decoder = codec_client->startRequest(request_headers);
       Buffer::OwnedImpl body(request_body);
-      codec_client->sendData(encoder, body, true);
+      codec_client->sendData(encoder_decoder.first, body, true);
+      response = std::move(encoder_decoder.second);
     } else {
-      codec_client->makeHeaderOnlyRequest(request_headers, *response);
+      response = codec_client->makeHeaderOnlyRequest(request_headers);
     }
 
     // Empty issuer_response_body indicates issuer will not be called.
     // Mock a response from an issuer server.
     if (!issuer_response_body.empty()) {
-      fake_upstream_connection_issuer =
-          fake_upstreams_[1]->waitForHttpConnection(*dispatcher_);
-      request_stream_issuer =
-          fake_upstream_connection_issuer->waitForNewStream(*dispatcher_);
-      request_stream_issuer->waitForEndStream(*dispatcher_);
+      ASSERT_TRUE(fake_upstreams_[1]->waitForHttpConnection(
+          *dispatcher_, fake_upstream_connection_issuer));
+      ASSERT_TRUE(fake_upstream_connection_issuer->waitForNewStream(
+          *dispatcher_, request_stream_issuer));
+      ASSERT_TRUE(request_stream_issuer->waitForEndStream(*dispatcher_));
 
-      request_stream_issuer->encodeHeaders(issuer_response_headers, false);
+      request_stream_issuer->encodeHeaders(
+          Http::HeaderMapImpl(issuer_response_headers), false);
       Buffer::OwnedImpl body(issuer_response_body);
       request_stream_issuer->encodeData(body, true);
     }
@@ -150,12 +152,11 @@ class JwtVerificationFilterIntegrationTest
     // Valid JWT case.
     // Check if the request sent to the backend includes the expected one.
     if (verification_success) {
-      fake_upstream_connection_backend =
-          fake_upstreams_[0]->waitForHttpConnection(*dispatcher_);
-      request_stream_backend =
-          fake_upstream_connection_backend->waitForNewStream(*dispatcher_);
-      request_stream_backend->waitForEndStream(*dispatcher_);
-
+      ASSERT_TRUE(fake_upstreams_[0]->waitForHttpConnection(
+          *dispatcher_, fake_upstream_connection_backend));
+      ASSERT_TRUE(fake_upstream_connection_backend->waitForNewStream(
+          *dispatcher_, request_stream_backend));
+      ASSERT_TRUE(request_stream_backend->waitForEndStream(*dispatcher_));
       EXPECT_TRUE(request_stream_backend->complete());
 
       ExpectHeaderIncluded(expected_headers, request_stream_backend->headers());
@@ -180,12 +181,12 @@ class JwtVerificationFilterIntegrationTest
 
     codec_client->close();
     if (!issuer_response_body.empty()) {
-      fake_upstream_connection_issuer->close();
-      fake_upstream_connection_issuer->waitForDisconnect();
+      ASSERT_TRUE(fake_upstream_connection_issuer->close());
+      ASSERT_TRUE(fake_upstream_connection_issuer->waitForDisconnect());
     }
     if (verification_success) {
-      fake_upstream_connection_backend->close();
-      fake_upstream_connection_backend->waitForDisconnect();
+      ASSERT_TRUE(fake_upstream_connection_backend->close());
+      ASSERT_TRUE(fake_upstream_connection_backend->waitForDisconnect());
     }
   }
 
@@ -260,11 +261,13 @@ TEST_P(JwtVerificationFilterIntegrationTestWithJwks, RSASuccess1) {
       "xfP590ACPyXrivtsxg";
 
   auto expected_headers = BaseRequestHeaders();
-  expected_headers.addCopy(
-      "sec-istio-auth-userinfo",
-      "eyJpc3MiOiJodHRwczovL2V4YW1wbGUuY29tIiwic3ViIjoidGVz"
-      "dEBleGFtcGxlLmNvbSIsImF1ZCI6ImV4YW1wbGVfc2VydmljZSIs"
-      "ImV4cCI6MjAwMTAwMTAwMX0");
+  // TODO: JWT payload is not longer output to header. Find way to verify that
+  // data equivalent to this is added to dynamicMetadata.
+  //   expected_headers.addCopy(
+  //       kJwtVerificationResultHeaderKey,
+  //       "eyJpc3MiOiJodHRwczovL2V4YW1wbGUuY29tIiwic3ViIjoidGVz"
+  //       "dEBleGFtcGxlLmNvbSIsImF1ZCI6ImV4YW1wbGVfc2VydmljZSIs"
+  //       "ImV4cCI6MjAwMTAwMTAwMX0");
 
   TestVerification(createHeaders(kJwtNoKid), "", createIssuerHeaders(),
                    kPublicKeyRSA, true, expected_headers, "");
@@ -283,11 +286,13 @@ TEST_P(JwtVerificationFilterIntegrationTestWithJwks, ES256Success1) {
       "T9ubWvRvNGGYOTuJ8T17Db68Qk3T8UNTK5lzfR_mw";
 
   auto expected_headers = BaseRequestHeaders();
-  expected_headers.addCopy("sec-istio-auth-userinfo",
-                           "eyJpc3MiOiJo"
-                           "dHRwczovL2V4YW1wbGUuY29tIiwic3ViIjoidGVzdEBleGFtc"
-                           "GxlLmNvbSIsImV4cCI6MjAwMTAwMTAwMSwiYXVkIjoiZXhhbX"
-                           "BsZV9zZXJ2aWNlIn0");
+  // TODO: JWT payload is not longer output to header. Find way to verify that
+  // data equivalent to this is added to dynamicMetadata.
+  //   expected_headers.addCopy(kJwtVerificationResultHeaderKey,
+  //                            "eyJpc3MiOiJo"
+  //                            "dHRwczovL2V4YW1wbGUuY29tIiwic3ViIjoidGVzdEBleGFtc"
+  //                            "GxlLmNvbSIsImV4cCI6MjAwMTAwMTAwMSwiYXVkIjoiZXhhbX"
+  //                            "BsZV9zZXJ2aWNlIn0");
 
   TestVerification(createHeaders(kJwtEC), "", createIssuerHeaders(),
                    kPublicKeyEC, true, expected_headers, "");
@@ -372,23 +377,18 @@ TEST_P(JwtVerificationFilterIntegrationTestWithInjectedJwtResult,
   FakeStreamPtr request_stream_backend;
   codec_client = makeHttpConnection(lookupPort("http"));
   // Send a request to Envoy.
-  codec_client->makeHeaderOnlyRequest(headers, *response);
-  fake_upstream_connection_backend =
-      fake_upstreams_[0]->waitForHttpConnection(*dispatcher_);
-  request_stream_backend =
-      fake_upstream_connection_backend->waitForNewStream(*dispatcher_);
-  request_stream_backend->waitForEndStream(*dispatcher_);
+  response = codec_client->makeHeaderOnlyRequest(headers);
+  ASSERT_TRUE(fake_upstreams_[0]->waitForHttpConnection(
+      *dispatcher_, fake_upstream_connection_backend));
+  ASSERT_TRUE(fake_upstream_connection_backend->waitForNewStream(
+      *dispatcher_, request_stream_backend));
+  ASSERT_TRUE(request_stream_backend->waitForEndStream(*dispatcher_));
   EXPECT_TRUE(request_stream_backend->complete());
-
-  // With sanitization, the headers received by the backend should not
-  // contain the injected JWT verification header.
-  EXPECT_TRUE(request_stream_backend->headers().get(
-                  kJwtVerificationResultHeaderKey) == nullptr);
 
   response->waitForEndStream();
   codec_client->close();
-  fake_upstream_connection_backend->close();
-  fake_upstream_connection_backend->waitForDisconnect();
+  ASSERT_TRUE(fake_upstream_connection_backend->close());
+  ASSERT_TRUE(fake_upstream_connection_backend->waitForDisconnect());
 }
 
 }  // namespace Envoy

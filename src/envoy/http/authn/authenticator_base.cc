@@ -15,7 +15,9 @@
 
 #include "src/envoy/http/authn/authenticator_base.h"
 #include "common/common/assert.h"
+#include "common/config/metadata.h"
 #include "src/envoy/http/authn/authn_utils.h"
+#include "src/envoy/utils/filter_names.h"
 #include "src/envoy/utils/utils.h"
 
 using istio::authn::Payload;
@@ -26,6 +28,19 @@ namespace Envoy {
 namespace Http {
 namespace Istio {
 namespace AuthN {
+
+namespace {
+// The default header name for an exchanged token
+static const std::string kExchangedTokenHeaderName = "ingress-authorization";
+
+// Returns whether the header for an exchanged token is found
+bool FindHeaderOfExchangedToken(const iaapi::Jwt& jwt) {
+  return (jwt.jwt_headers_size() == 1 &&
+          LowerCaseString(kExchangedTokenHeaderName) ==
+              LowerCaseString(jwt.jwt_headers(0)));
+}
+
+}  // namespace
 
 AuthenticatorBase::AuthenticatorBase(FilterContext* filter_context)
     : filter_context_(*filter_context) {}
@@ -43,41 +58,52 @@ bool AuthenticatorBase::validateX509(const iaapi::MutualTls& mtls,
   const bool has_user =
       connection->ssl() != nullptr &&
       connection->ssl()->peerCertificatePresented() &&
-      Utils::GetSourceUser(connection, payload->mutable_x509()->mutable_user());
+      Utils::GetPrincipal(connection, true,
+                          payload->mutable_x509()->mutable_user());
 
+  ENVOY_LOG(debug, "validateX509 mode {}: ssl={}, has_user={}",
+            iaapi::MutualTls::Mode_Name(mtls.mode()),
+            connection->ssl() != nullptr, has_user);
   // Return value depend on mode:
   // - PERMISSIVE: plaintext connection is acceptable, thus return true
   // regardless.
-  // - TLS_PERMISSIVE: tls connection is required, but certificate is optional.
   // - STRICT: must be TLS with valid certificate.
   switch (mtls.mode()) {
     case iaapi::MutualTls::PERMISSIVE:
       return true;
-    case iaapi::MutualTls::TLS_PERMISSIVE:
-      return connection->ssl() != nullptr;
     case iaapi::MutualTls::STRICT:
       return has_user;
     default:
-      NOT_REACHED;
+      NOT_REACHED_GCOVR_EXCL_LINE;
   }
 }
 
 bool AuthenticatorBase::validateJwt(const iaapi::Jwt& jwt, Payload* payload) {
-  Envoy::Http::HeaderMap& header = *filter_context()->headers();
-
-  auto iter =
-      filter_context()->filter_config().jwt_output_payload_locations().find(
-          jwt.issuer());
-  if (iter ==
-      filter_context()->filter_config().jwt_output_payload_locations().end()) {
-    ENVOY_LOG(warn, "No JWT payload header location is found for the issuer {}",
-              jwt.issuer());
-    return false;
+  std::string jwt_payload;
+  if (filter_context()->getJwtPayload(jwt.issuer(), &jwt_payload)) {
+    std::string payload_to_process = jwt_payload;
+    std::string original_payload;
+    if (FindHeaderOfExchangedToken(jwt)) {
+      if (AuthnUtils::ExtractOriginalPayload(jwt_payload, &original_payload)) {
+        // When the header of an exchanged token is found and the token
+        // contains the claim of the original payload, the original payload
+        // is extracted and used as the token payload.
+        payload_to_process = original_payload;
+      } else {
+        // When the header of an exchanged token is found but the token
+        // does not contain the claim of the original payload, it
+        // is regarded as an invalid exchanged token.
+        ENVOY_LOG(
+            error,
+            "Expect exchanged-token with original payload claim. Received: {}",
+            jwt_payload);
+        return false;
+      }
+    }
+    return AuthnUtils::ProcessJwtPayload(payload_to_process,
+                                         payload->mutable_jwt());
   }
-
-  LowerCaseString header_key(iter->second);
-  return AuthnUtils::GetJWTPayloadFromHeaders(header, header_key,
-                                              payload->mutable_jwt());
+  return false;
 }
 
 }  // namespace AuthN

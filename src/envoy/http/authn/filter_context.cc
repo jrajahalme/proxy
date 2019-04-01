@@ -14,6 +14,7 @@
  */
 
 #include "src/envoy/http/authn/filter_context.h"
+#include "src/envoy/utils/filter_names.h"
 #include "src/envoy/utils/utils.h"
 
 using istio::authn::Payload;
@@ -30,15 +31,15 @@ void FilterContext::setPeerResult(const Payload* payload) {
   if (payload != nullptr) {
     switch (payload->payload_case()) {
       case Payload::kX509:
+        ENVOY_LOG(debug, "Set peer from X509: {}", payload->x509().user());
         result_.set_peer_user(payload->x509().user());
         break;
       case Payload::kJwt:
+        ENVOY_LOG(debug, "Set peer from JWT: {}", payload->jwt().user());
         result_.set_peer_user(payload->jwt().user());
         break;
       default:
-        ENVOY_LOG(warn,
-                  "Source authentiation payload doesn't contain x509 nor jwt "
-                  "payload.");
+        ENVOY_LOG(debug, "Payload has not peer authentication data");
         break;
     }
   }
@@ -56,9 +57,12 @@ void FilterContext::setOriginResult(const Payload* payload) {
 void FilterContext::setPrincipal(const iaapi::PrincipalBinding& binding) {
   switch (binding) {
     case iaapi::PrincipalBinding::USE_PEER:
+      ENVOY_LOG(debug, "Set principal from peer: {}", result_.peer_user());
       result_.set_principal(result_.peer_user());
       return;
     case iaapi::PrincipalBinding::USE_ORIGIN:
+      ENVOY_LOG(debug, "Set principal from origin: {}",
+                result_.origin().user());
       result_.set_principal(result_.origin().user());
       return;
     default:
@@ -66,6 +70,29 @@ void FilterContext::setPrincipal(const iaapi::PrincipalBinding& binding) {
       ENVOY_LOG(error, "Invalid binding value {}", binding);
       return;
   }
+}
+
+bool FilterContext::getJwtPayload(const std::string& issuer,
+                                  std::string* payload) const {
+  const auto filter_it =
+      dynamic_metadata_.filter_metadata().find(Utils::IstioFilterName::kJwt);
+  if (filter_it == dynamic_metadata_.filter_metadata().end()) {
+    ENVOY_LOG(debug, "No dynamic_metadata found for filter {}",
+              Utils::IstioFilterName::kJwt);
+    return false;
+  }
+
+  const auto& data_struct = filter_it->second;
+  const auto entry_it = data_struct.fields().find(issuer);
+  if (entry_it == data_struct.fields().end()) {
+    return false;
+  }
+  if (entry_it->second.string_value().empty()) {
+    return false;
+  }
+
+  *payload = entry_it->second.string_value();
+  return true;
 }
 
 }  // namespace AuthN

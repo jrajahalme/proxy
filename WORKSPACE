@@ -15,13 +15,16 @@
 ################################################################################
 #
 
+# http_archive is not a native function since bazel 0.19
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load(
-     "//:repositories.bzl",
-     "googletest_repositories",
-     "mixerapi_dependencies",
+    "//:repositories.bzl",
+    "googletest_repositories",
+    "mixerapi_dependencies",
 )
 
 googletest_repositories()
+
 mixerapi_dependencies()
 
 bind(
@@ -29,41 +32,38 @@ bind(
     actual = "//external:ssl",
 )
 
-# We need newer gRPC than Envoy has for ALTS, this could be removed once Envoy picks
-# newer gRPC with ALTS support. (likely v1.11).
-git_repository(
-    name = "com_github_grpc_grpc",
-    remote = "https://github.com/grpc/grpc.git",
-    commit = "c50405364a194a0e4931153cbe329662d90530bc",  # Mar 28, 2018
-)
-
 # When updating envoy sha manually please update the sha in istio.deps file also
-ENVOY_SHA = "2b2c299144600fb9e525d21aabf39bf48e64fb1f"
+#
+# Determine SHA256 `wget https://github.com/envoyproxy/envoy/archive/COMMIT.tar.gz && sha256sum COMMIT.tar.gz`
+ENVOY_SHA = "15a19b9cb1cc8bd5a5ec71d125177b3f6c9a3cf5"
+
+ENVOY_SHA256 = "5cfd67dcb8cd5d240ae1a7d6c5303bb385e4b4340705eba9e96f067f24e5e8d7"
 
 http_archive(
     name = "envoy",
+    sha256 = ENVOY_SHA256,
     strip_prefix = "envoy-" + ENVOY_SHA,
-    url = "https://github.com/envoyproxy/envoy/archive/" + ENVOY_SHA + ".zip",
+    url = "https://github.com/envoyproxy/envoy/archive/" + ENVOY_SHA + ".tar.gz",
 )
 
-load("@envoy//bazel:repositories.bzl", "envoy_dependencies")
+load("@envoy//bazel:repositories.bzl", "GO_VERSION", "envoy_dependencies")
+
 envoy_dependencies()
 
+load("@rules_foreign_cc//:workspace_definitions.bzl", "rules_foreign_cc_dependencies")
+
+rules_foreign_cc_dependencies()
+
 load("@envoy//bazel:cc_configure.bzl", "cc_configure")
+
 cc_configure()
 
 load("@envoy_api//bazel:repositories.bzl", "api_dependencies")
+
 api_dependencies()
 
-load("@io_bazel_rules_go//go:def.bzl", "go_rules_dependencies", "go_register_toolchains")
-load("@com_lyft_protoc_gen_validate//bazel:go_proto_library.bzl", "go_proto_repositories")
-go_proto_repositories(shared=0)
-go_rules_dependencies()
-go_register_toolchains()
+load("@io_bazel_rules_go//go:deps.bzl", "go_register_toolchains", "go_rules_dependencies")
 
-load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
-git_repository(
-    name = "org_pubref_rules_protobuf",
-    commit = "563b674a2ce6650d459732932ea2bc98c9c9a9bf",  # Nov 28, 2017 (bazel 0.8.0 support)
-    remote = "https://github.com/pubref/rules_protobuf",
-)
+go_rules_dependencies()
+
+go_register_toolchains(go_version = GO_VERSION)

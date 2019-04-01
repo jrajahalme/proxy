@@ -25,7 +25,6 @@
 #include <utility>
 
 #include "google/protobuf/stubs/status.h"
-#include "include/istio/mixerclient/client.h"
 #include "include/istio/mixerclient/options.h"
 #include "include/istio/utils/simple_lru_cache.h"
 #include "include/istio/utils/simple_lru_cache_inl.h"
@@ -54,7 +53,11 @@ class CheckCache {
 
     bool IsCacheHit() const;
 
-    ::google::protobuf::util::Status status() const { return status_; }
+    const ::google::protobuf::util::Status& status() const { return status_; }
+
+    const ::istio::mixer::v1::RouteDirective& route_directive() const {
+      return route_directive_;
+    }
 
     void SetResponse(const ::google::protobuf::util::Status& status,
                      const ::istio::mixer::v1::Attributes& attributes,
@@ -62,12 +65,18 @@ class CheckCache {
       if (on_response_) {
         status_ = on_response_(status, attributes, response);
       }
+      if (response.has_precondition()) {
+        route_directive_ = response.precondition().route_directive();
+      }
     }
 
    private:
     friend class CheckCache;
     // Check status.
     ::google::protobuf::util::Status status_;
+
+    // Route directive
+    ::istio::mixer::v1::RouteDirective route_directive_;
 
     // The function to set check response.
     using OnResponseFunc = std::function<::google::protobuf::util::Status(
@@ -87,7 +96,8 @@ class CheckCache {
   // If the check could not be handled by the cache, returns NOT_FOUND,
   // caller has to send the request to mixer.
   ::google::protobuf::util::Status Check(
-      const ::istio::mixer::v1::Attributes& request, Tick time_now);
+      const ::istio::mixer::v1::Attributes& request, Tick time_now,
+      CheckResult* result);
 
   // Caches a response from a remote mixer call.
   // Return the converted status from response.
@@ -121,29 +131,36 @@ class CheckCache {
     // getter for converted status from response.
     ::google::protobuf::util::Status status() const { return status_; }
 
+    // getter for the route directive
+    ::istio::mixer::v1::RouteDirective route_directive() const {
+      return route_directive_;
+    }
+
    private:
     // To the parent cache object.
     const CheckCache& parent_;
     // The check status for the last check request.
     ::google::protobuf::util::Status status_;
+    // Route directive
+    ::istio::mixer::v1::RouteDirective route_directive_;
     // Cache item should not be used after it is expired.
     std::chrono::time_point<std::chrono::system_clock> expire_time_;
     // if -1, not to check use_count.
     // if 0, cache item should not be used.
-    // use_cound is decreased by 1 for each request,
+    // use_count is decreased by 1 for each request,
     int use_count_;
   };
 
   // Key is the signature of the Attributes. Value is the CacheElem.
   // It is a LRU cache with maximum size.
   // When the maximum size is reached, oldest idle items will be removed.
-  using CheckLRUCache = utils::SimpleLRUCache<std::string, CacheElem>;
+  using CheckLRUCache = utils::SimpleLRUCache<utils::HashType, CacheElem>;
 
   // The check options.
   CheckOptions options_;
 
   // Referenced map keyed with their hashes
-  std::unordered_map<std::string, Referenced> referenced_map_;
+  std::unordered_map<utils::HashType, Referenced> referenced_map_;
 
   // Mutex guarding the access of cache_;
   std::mutex cache_mutex_;

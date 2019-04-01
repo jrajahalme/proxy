@@ -17,14 +17,15 @@ licenses(["notice"])
 cc_library(
     name = "headers_lib",
     hdrs = [
-        "client.h",
         "check_response.h",
+        "client.h",
         "environment.h",
         "options.h",
         "timer.h",
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//external:mixer_api_cc_proto",
         "//include/istio/quota_config:requirement_header",
     ],
 )

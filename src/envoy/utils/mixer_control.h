@@ -16,9 +16,12 @@
 #pragma once
 
 #include "envoy/event/dispatcher.h"
+#include "envoy/local_info/local_info.h"
 #include "envoy/runtime/runtime.h"
 #include "envoy/upstream/cluster_manager.h"
 #include "include/istio/mixerclient/client.h"
+#include "include/istio/utils/attribute_names.h"
+#include "include/istio/utils/local_attributes.h"
 #include "src/envoy/utils/config.h"
 
 namespace Envoy {
@@ -29,11 +32,19 @@ void CreateEnvironment(Event::Dispatcher &dispatcher,
                        Runtime::RandomGenerator &random,
                        Grpc::AsyncClientFactory &check_client_factory,
                        Grpc::AsyncClientFactory &report_client_factory,
+                       const std::string &serialized_forward_attributes,
                        ::istio::mixerclient::Environment *env);
+
+void SerializeForwardedAttributes(
+    const ::istio::mixer::v1::config::client::TransportConfig &transport,
+    std::string *serialized_forward_attributes);
 
 Grpc::AsyncClientFactoryPtr GrpcClientFactoryForCluster(
     const std::string &cluster_name, Upstream::ClusterManager &cm,
-    Stats::Scope &scope);
+    Stats::Scope &scope, TimeSource &time_source);
+
+bool ExtractNodeInfo(const envoy::api::v2::core::Node &node,
+                     ::istio::utils::LocalNode *args);
 
 }  // namespace Utils
 }  // namespace Envoy

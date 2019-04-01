@@ -40,10 +40,9 @@ cc_library(
         "attribute_compressor.h",
         "check_cache.cc",
         "check_cache.h",
+        "check_context.h",
         "client_impl.cc",
         "client_impl.h",
-        "delta_update.cc",
-        "delta_update.h",
         "global_dictionary.cc",
         "global_dictionary.h",
         "quota_cache.cc",
@@ -52,6 +51,9 @@ cc_library(
         "referenced.h",
         "report_batch.cc",
         "report_batch.h",
+        "shared_attributes.h",
+        "status_util.cc",
+        "status_util.h",
     ],
     visibility = ["//visibility:public"],
     deps = [
@@ -60,8 +62,8 @@ cc_library(
         "//include/istio/quota_config:requirement_header",
         "//include/istio/utils:simple_lru_cache",
         "//src/istio/prefetch:quota_prefetch_lib",
-        "//src/istio/utils:md5_lib",
         "//src/istio/utils:utils_lib",
+        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -92,17 +94,6 @@ cc_test(
     deps = [
         ":mixerclient_lib",
         ":status_test_util_lib",
-        "//external:googletest_main",
-    ],
-)
-
-cc_test(
-    name = "delta_update_test",
-    size = "small",
-    srcs = ["delta_update_test.cc"],
-    linkstatic = 1,
-    deps = [
-        ":mixerclient_lib",
         "//external:googletest_main",
     ],
 )

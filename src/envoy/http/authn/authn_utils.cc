@@ -13,8 +13,12 @@
  * limitations under the License.
  */
 
+#include <regex>
+
+#include "absl/strings/match.h"
 #include "authn_utils.h"
 #include "common/json/json_loader.h"
+#include "google/protobuf/struct.pb.h"
 #include "src/envoy/http/jwt_auth/jwt.h"
 
 namespace Envoy {
@@ -24,25 +28,28 @@ namespace AuthN {
 namespace {
 // The JWT audience key name
 static const std::string kJwtAudienceKey = "aud";
+// The JWT issuer key name
+static const std::string kJwtIssuerKey = "iss";
+// The key name for the original claims in an exchanged token
+static const std::string kExchangedTokenOriginalPayload = "original_claims";
 
-// Extract JWT audience into the JwtPayload.
-// This function should to be called after the claims are extracted.
-void ExtractJwtAudience(
-    const Envoy::Json::Object& obj,
-    const ::google::protobuf::Map< ::std::string, ::std::string>& claims,
-    istio::authn::JwtPayload* payload) {
-  const std::string& key = kJwtAudienceKey;
-  // "aud" can be either string array or string.
+// Extract JWT claim as a string list.
+// This function only extracts string and string list claims.
+// A string claim is extracted as a string list of 1 item.
+void ExtractStringList(const std::string& key, const Envoy::Json::Object& obj,
+                       std::vector<std::string>* list) {
   // First, try as string
-  if (claims.count(key) > 0) {
-    payload->add_audiences(claims.at(key));
-    return;
+  try {
+    // Try as string, will throw execption if object type is not string.
+    list->push_back(obj.getString(key));
+  } catch (Json::Exception& e) {
+    // Not convertable to string
   }
   // Next, try as string array
   try {
-    std::vector<std::string> aud_vector = obj.getStringArray(key);
-    for (const std::string aud : aud_vector) {
-      payload->add_audiences(aud);
+    std::vector<std::string> vector = obj.getStringArray(key);
+    for (const std::string v : vector) {
+      list->push_back(v);
     }
   } catch (Json::Exception& e) {
     // Not convertable to string array
@@ -50,27 +57,8 @@ void ExtractJwtAudience(
 }
 };  // namespace
 
-// Retrieve the JwtPayload from the HTTP headers with the key
-bool AuthnUtils::GetJWTPayloadFromHeaders(
-    const HeaderMap& headers, const LowerCaseString& jwt_payload_key,
-    istio::authn::JwtPayload* payload) {
-  const HeaderEntry* entry = headers.get(jwt_payload_key);
-  if (!entry) {
-    ENVOY_LOG(debug, "No JWT payload {} in the header", jwt_payload_key.get());
-    return false;
-  }
-  std::string value(entry->value().c_str(), entry->value().size());
-  // JwtAuth::Base64UrlDecode() is different from Base64::decode().
-  std::string payload_str = JwtAuth::Base64UrlDecode(value);
-  // Return an empty string if Base64 decode fails.
-  if (payload_str.empty()) {
-    ENVOY_LOG(error, "Invalid {} header, invalid base64: {}",
-              jwt_payload_key.get(), value);
-    return false;
-  }
-  *payload->mutable_raw_claims() = payload_str;
-  ::google::protobuf::Map< ::std::string, ::std::string>* claims =
-      payload->mutable_claims();
+bool AuthnUtils::ProcessJwtPayload(const std::string& payload_str,
+                                   istio::authn::JwtPayload* payload) {
   Envoy::Json::ObjectSharedPtr json_obj;
   try {
     json_obj = Json::Factory::loadFromString(payload_str);
@@ -80,33 +68,137 @@ bool AuthnUtils::GetJWTPayloadFromHeaders(
     return false;
   }
 
-  // Extract claims
-  json_obj->iterate(
-      [payload](const std::string& key, const Json::Object& obj) -> bool {
-        ::google::protobuf::Map< ::std::string, ::std::string>* claims =
-            payload->mutable_claims();
-        // In current implementation, only string objects are extracted into
-        // claims. If call obj.asJsonString(), will get "panic: not reached"
-        // from json_loader.cc.
-        try {
-          // Try as string, will throw execption if object type is not string.
-          (*claims)[key] = obj.asString();
-        } catch (Json::Exception& e) {
-        }
-        return true;
-      });
-  // Extract audience
-  // ExtractJwtAudience() should be called after claims are extracted.
-  ExtractJwtAudience(*json_obj, payload->claims(), payload);
+  *payload->mutable_raw_claims() = payload_str;
+
+  auto claims = payload->mutable_claims()->mutable_fields();
+  // Extract claims as string lists
+  json_obj->iterate([json_obj, claims](const std::string& key,
+                                       const Json::Object&) -> bool {
+    // In current implementation, only string/string list objects are extracted
+    std::vector<std::string> list;
+    ExtractStringList(key, *json_obj, &list);
+    for (auto s : list) {
+      (*claims)[key].mutable_list_value()->add_values()->set_string_value(s);
+    }
+    return true;
+  });
+  // Copy audience to the audience in context.proto
+  if (claims->find(kJwtAudienceKey) != claims->end()) {
+    for (const auto& v : (*claims)[kJwtAudienceKey].list_value().values()) {
+      payload->add_audiences(v.string_value());
+    }
+  }
+
   // Build user
-  if (claims->count("iss") > 0 && claims->count("sub") > 0) {
-    payload->set_user((*claims)["iss"] + "/" + (*claims)["sub"]);
+  if (claims->find("iss") != claims->end() &&
+      claims->find("sub") != claims->end()) {
+    payload->set_user(
+        (*claims)["iss"].list_value().values().Get(0).string_value() + "/" +
+        (*claims)["sub"].list_value().values().Get(0).string_value());
   }
   // Build authorized presenter (azp)
-  if (claims->count("azp") > 0) {
-    payload->set_presenter((*claims)["azp"]);
+  if (claims->find("azp") != claims->end()) {
+    payload->set_presenter(
+        (*claims)["azp"].list_value().values().Get(0).string_value());
   }
+
   return true;
+}
+
+bool AuthnUtils::ExtractOriginalPayload(const std::string& token,
+                                        std::string* original_payload) {
+  Envoy::Json::ObjectSharedPtr json_obj;
+  try {
+    json_obj = Json::Factory::loadFromString(token);
+  } catch (...) {
+    return false;
+  }
+
+  if (json_obj->hasObject(kExchangedTokenOriginalPayload) == false) {
+    return false;
+  }
+
+  Envoy::Json::ObjectSharedPtr original_payload_obj;
+  try {
+    auto original_payload_obj =
+        json_obj->getObject(kExchangedTokenOriginalPayload);
+    *original_payload = original_payload_obj->asJsonString();
+    ENVOY_LOG(debug, "{}: the original payload in exchanged token is {}",
+              __FUNCTION__, *original_payload);
+  } catch (...) {
+    ENVOY_LOG(debug,
+              "{}: original_payload in exchanged token is of invalid format.",
+              __FUNCTION__);
+    return false;
+  }
+
+  return true;
+}
+
+bool AuthnUtils::MatchString(const char* const str,
+                             const iaapi::StringMatch& match) {
+  if (str == nullptr) {
+    return false;
+  }
+  switch (match.match_type_case()) {
+    case iaapi::StringMatch::kExact: {
+      return match.exact().compare(str) == 0;
+    }
+    case iaapi::StringMatch::kPrefix: {
+      return absl::StartsWith(str, match.prefix());
+    }
+    case iaapi::StringMatch::kSuffix: {
+      return absl::EndsWith(str, match.suffix());
+    }
+    case iaapi::StringMatch::kRegex: {
+      return std::regex_match(str, std::regex(match.regex()));
+    }
+    default:
+      return false;
+  }
+}
+
+static bool matchRule(const char* const path,
+                      const iaapi::Jwt_TriggerRule& rule) {
+  for (const auto& excluded : rule.excluded_paths()) {
+    if (AuthnUtils::MatchString(path, excluded)) {
+      // The rule is not matched if any of excluded_paths matched.
+      return false;
+    }
+  }
+
+  if (rule.included_paths_size() > 0) {
+    for (const auto& included : rule.included_paths()) {
+      if (AuthnUtils::MatchString(path, included)) {
+        // The rule is matched if any of included_paths matched.
+        return true;
+      }
+    }
+
+    // The rule is not matched if included_paths is not empty and none of them
+    // matched.
+    return false;
+  }
+
+  // The rule is matched if none of excluded_paths matched and included_paths is
+  // empty.
+  return true;
+}
+
+bool AuthnUtils::ShouldValidateJwtPerPath(const char* const path,
+                                          const iaapi::Jwt& jwt) {
+  // If the path is nullptr which shouldn't happen for a HTTP request or if
+  // there are no trigger rules at all, then simply return true as if there're
+  // no per-path jwt support.
+  if (path == nullptr || jwt.trigger_rules_size() == 0) {
+    return true;
+  }
+  for (const auto& rule : jwt.trigger_rules()) {
+    if (matchRule(path, rule)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace AuthN

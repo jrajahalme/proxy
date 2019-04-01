@@ -18,6 +18,7 @@
 #include "src/envoy/http/jwt_auth/jwt.h"
 #include "src/envoy/http/jwt_auth/jwt_authenticator.h"
 #include "src/envoy/utils/authn.h"
+#include "src/envoy/utils/header_update.h"
 #include "src/envoy/utils/utils.h"
 
 using HttpCheckData = ::istio::control::http::CheckData;
@@ -26,35 +27,30 @@ namespace Envoy {
 namespace Http {
 namespace Mixer {
 namespace {
-// The HTTP header to forward Istio attributes.
-const LowerCaseString kIstioAttributeHeader("x-istio-attributes");
-
 // Referer header
 const LowerCaseString kRefererHeaderKey("referer");
 
 // Set of headers excluded from request.headers attribute.
 const std::set<std::string> RequestHeaderExclusives = {
-    kIstioAttributeHeader.get(),
+    Utils::HeaderUpdate::IstioAttributeHeader().get(),
 };
 
 }  // namespace
 
 CheckData::CheckData(const HeaderMap& headers,
+                     const envoy::api::v2::core::Metadata& metadata,
                      const Network::Connection* connection)
-    : headers_(headers), connection_(connection) {
+    : headers_(headers), metadata_(metadata), connection_(connection) {
   if (headers_.Path()) {
     query_params_ = Utility::parseQueryString(std::string(
         headers_.Path()->value().c_str(), headers_.Path()->value().size()));
   }
 }
 
-const LowerCaseString& CheckData::IstioAttributeHeader() {
-  return kIstioAttributeHeader;
-}
-
 bool CheckData::ExtractIstioAttributes(std::string* data) const {
   // Extract attributes from x-istio-attributes header
-  const HeaderEntry* entry = headers_.get(kIstioAttributeHeader);
+  const HeaderEntry* entry =
+      headers_.get(Utils::HeaderUpdate::IstioAttributeHeader());
   if (entry) {
     *data = Base64::decode(
         std::string(entry->value().c_str(), entry->value().size()));
@@ -70,15 +66,21 @@ bool CheckData::GetSourceIpPort(std::string* ip, int* port) const {
   return false;
 }
 
-bool CheckData::GetSourceUser(std::string* user) const {
-  return Utils::GetSourceUser(connection_, user);
+bool CheckData::GetPrincipal(bool peer, std::string* user) const {
+  return Utils::GetPrincipal(connection_, peer, user);
 }
 
 std::map<std::string, std::string> CheckData::GetRequestHeaders() const {
-  return Utils::ExtractHeaders(headers_, RequestHeaderExclusives);
+  std::map<std::string, std::string> header_map;
+  Utils::ExtractHeaders(headers_, RequestHeaderExclusives, header_map);
+  return header_map;
 }
 
 bool CheckData::IsMutualTLS() const { return Utils::IsMutualTLS(connection_); }
+
+bool CheckData::GetRequestedServerName(std::string* name) const {
+  return Utils::GetRequestedServerName(connection_, name);
+}
 
 bool CheckData::FindHeaderByType(HttpCheckData::HeaderType header_type,
                                  std::string* value) const {
@@ -115,6 +117,13 @@ bool CheckData::FindHeaderByType(HttpCheckData::HeaderType header_type,
       if (headers_.Method()) {
         *value = std::string(headers_.Method()->value().c_str(),
                              headers_.Method()->value().size());
+        return true;
+      }
+      break;
+    case HttpCheckData::HEADER_CONTENT_TYPE:
+      if (headers_.ContentType()) {
+        *value = std::string(headers_.ContentType()->value().c_str(),
+                             headers_.ContentType()->value().size());
         return true;
       }
       break;
@@ -158,42 +167,31 @@ bool CheckData::FindCookie(const std::string& name, std::string* value) const {
   return false;
 }
 
-bool CheckData::GetJWTPayload(
-    std::map<std::string, std::string>* payload) const {
-  const HeaderEntry* entry =
-      headers_.get(JwtAuth::JwtAuthenticator::JwtPayloadKey());
-  if (!entry) {
+const ::google::protobuf::Struct* CheckData::GetAuthenticationResult() const {
+  return Utils::Authentication::GetResultFromMetadata(metadata_);
+}
+
+bool CheckData::GetUrlPath(std::string* url_path) const {
+  if (!headers_.Path()) {
     return false;
   }
-  std::string value(entry->value().c_str(), entry->value().size());
-  std::string payload_str = JwtAuth::Base64UrlDecode(value);
-  // Return an empty string if Base64 decode fails.
-  if (payload_str.empty()) {
-    ENVOY_LOG(error, "Invalid {} header, invalid base64: {}",
-              JwtAuth::JwtAuthenticator::JwtPayloadKey().get(), value);
-    return false;
-  }
-  try {
-    auto json_obj = Json::Factory::loadFromString(payload_str);
-    json_obj->iterate(
-        [payload](const std::string& key, const Json::Object& obj) -> bool {
-          // will throw execption if value type is not string.
-          try {
-            (*payload)[key] = obj.asString();
-          } catch (...) {
-          }
-          return true;
-        });
-  } catch (...) {
-    ENVOY_LOG(error, "Invalid {} header, invalid json: {}",
-              JwtAuth::JwtAuthenticator::JwtPayloadKey().get(), payload_str);
-    return false;
+  const HeaderString& path = headers_.Path()->value();
+  const char* query_start = Utility::findQueryStringStart(path);
+  if (query_start != nullptr) {
+    *url_path = std::string(path.c_str(), query_start - path.c_str());
+  } else {
+    *url_path = std::string(path.c_str(), path.size());
   }
   return true;
 }
 
-bool CheckData::GetAuthenticationResult(istio::authn::Result* result) const {
-  return Utils::Authentication::FetchResultFromHeader(headers_, result);
+bool CheckData::GetRequestQueryParams(
+    std::map<std::string, std::string>* query_params) const {
+  if (!headers_.Path()) {
+    return false;
+  }
+  *query_params = Utility::parseQueryString(headers_.Path()->value().c_str());
+  return true;
 }
 
 }  // namespace Mixer

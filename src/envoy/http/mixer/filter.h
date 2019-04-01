@@ -33,13 +33,13 @@ struct PerRouteServiceConfig : public Router::RouteSpecificFilterConfig {
   std::string hash;
 };
 
-class Filter : public Http::StreamDecoderFilter,
+class Filter : public StreamFilter,
                public AccessLog::Instance,
                public Logger::Loggable<Logger::Id::filter> {
  public:
   Filter(Control& control);
 
-  // Implementing virtual functions for StreamDecoderFilter
+  // Http::StreamDecoderFilter
   FilterHeadersStatus decodeHeaders(HeaderMap& headers, bool) override;
   FilterDataStatus decodeData(Buffer::Instance& data, bool end_stream) override;
   FilterTrailersStatus decodeTrailers(HeaderMap& trailers) override;
@@ -49,14 +49,30 @@ class Filter : public Http::StreamDecoderFilter,
   // Http::StreamFilterBase
   void onDestroy() override;
 
+  // Http::StreamEncoderFilter
+  FilterHeadersStatus encode100ContinueHeaders(HeaderMap&) override {
+    return FilterHeadersStatus::Continue;
+  }
+  FilterHeadersStatus encodeHeaders(HeaderMap& headers, bool) override;
+  FilterDataStatus encodeData(Buffer::Instance&, bool) override {
+    return FilterDataStatus::Continue;
+  }
+  FilterTrailersStatus encodeTrailers(HeaderMap&) override {
+    return FilterTrailersStatus::Continue;
+  }
+  Http::FilterMetadataStatus encodeMetadata(MetadataMap&) override {
+    return FilterMetadataStatus::Continue;
+  }
+  void setEncoderFilterCallbacks(StreamEncoderFilterCallbacks&) override {}
+
   // This is the callback function when Check is done.
-  void completeCheck(const ::google::protobuf::util::Status& status);
+  void completeCheck(const ::istio::mixerclient::CheckResponseInfo& info);
 
   // Called when the request is completed.
   virtual void log(const HeaderMap* request_headers,
                    const HeaderMap* response_headers,
                    const HeaderMap* response_trailers,
-                   const RequestInfo::RequestInfo& request_info) override;
+                   const StreamInfo::StreamInfo& stream_info) override;
 
  private:
   // Read per-route config.
@@ -64,12 +80,15 @@ class Filter : public Http::StreamDecoderFilter,
       const Router::RouteEntry* entry,
       ::istio::control::http::Controller::PerRouteConfig* config);
 
+  // Update header maps
+  void UpdateHeaders(HeaderMap& headers,
+                     const ::google::protobuf::RepeatedPtrField<
+                         ::istio::mixer::v1::HeaderOperation>& operations);
+
   // The control object.
   Control& control_;
   // The request handler.
   std::unique_ptr<::istio::control::http::RequestHandler> handler_;
-  // The pending callback object.
-  istio::mixerclient::CancelFunc cancel_check_;
 
   enum State { NotStarted, Calling, Complete, Responded };
   // The state
@@ -85,6 +104,10 @@ class Filter : public Http::StreamDecoderFilter,
 
   // The stream decoder filter callback.
   StreamDecoderFilterCallbacks* decoder_callbacks_{nullptr};
+
+  // Returned directive
+  ::istio::mixer::v1::RouteDirective route_directive_{
+      ::istio::mixer::v1::RouteDirective::default_instance()};
 };
 
 }  // namespace Mixer

@@ -18,7 +18,8 @@ cc_library(
     name = "headers_lib",
     hdrs = [
         "attributes_builder.h",
-        "md5.h",
+        "concat_hash.h",
+        "local_attributes.h",
         "protobuf.h",
         "status.h",
     ],
@@ -31,6 +32,14 @@ cc_library(
     hdrs = [
         "simple_lru_cache.h",
         "simple_lru_cache_inl.h",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "attribute_names_header",
+    hdrs = [
+        "attribute_names.h",
     ],
     visibility = ["//visibility:public"],
 )

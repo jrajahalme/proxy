@@ -33,7 +33,6 @@ envoy_cc_library(
         "filter.cc",
         "filter.h",
         "filter_factory.cc",
-        "header_update.h",
         "report_data.h",
     ],
     repository = "@envoy",
@@ -43,6 +42,7 @@ envoy_cc_library(
         "//src/envoy/utils:authn_lib",
         "//src/envoy/utils:utils_lib",
         "//src/istio/control/http:control_lib",
+        "//src/istio/utils:utils_lib",
         "@envoy//source/exe:envoy_common_lib",
     ],
 )

@@ -15,6 +15,7 @@
 
 #include "src/istio/mixerclient/check_cache.h"
 #include "include/istio/utils/protobuf.h"
+#include "src/istio/utils/logger.h"
 
 using namespace std::chrono;
 using ::google::protobuf::util::Status;
@@ -38,6 +39,7 @@ void CheckCache::CacheElem::CacheElem::SetResponse(
       expire_time_ = time_point<system_clock>::max();
     }
     use_count_ = response.precondition().valid_use_count();
+    route_directive_ = response.precondition().route_directive();
   } else {
     status_ = Status(Code::INVALID_ARGUMENT,
                      "CheckResponse doesn't have PreconditionResult");
@@ -75,7 +77,7 @@ CheckCache::~CheckCache() {
 }
 
 void CheckCache::Check(const Attributes &attributes, CheckResult *result) {
-  Status status = Check(attributes, system_clock::now());
+  Status status = Check(attributes, system_clock::now(), result);
   if (status.error_code() != Code::NOT_FOUND) {
     result->status_ = status;
   }
@@ -95,26 +97,30 @@ void CheckCache::Check(const Attributes &attributes, CheckResult *result) {
   };
 }
 
-Status CheckCache::Check(const Attributes &attributes, Tick time_now) {
+Status CheckCache::Check(const Attributes &attributes, Tick time_now,
+                         CheckResult *result) {
   if (!cache_) {
     // By returning NOT_FOUND, caller will send request to server.
     return Status(Code::NOT_FOUND, "");
   }
 
+  std::lock_guard<std::mutex> lock(cache_mutex_);
   for (const auto &it : referenced_map_) {
     const Referenced &reference = it.second;
-    std::string signature;
+    utils::HashType signature;
     if (!reference.Signature(attributes, "", &signature)) {
       continue;
     }
 
-    std::lock_guard<std::mutex> lock(cache_mutex_);
     CheckLRUCache::ScopedLookup lookup(cache_.get(), signature);
     if (lookup.Found()) {
       CacheElem *elem = lookup.value();
       if (elem->IsExpired(time_now)) {
         cache_->Remove(signature);
         return Status(Code::NOT_FOUND, "");
+      }
+      if (result) {
+        result->route_directive_ = elem->route_directive();
       }
       return elem->status();
     }
@@ -140,20 +146,21 @@ Status CheckCache::CacheResponse(const Attributes &attributes,
     // Failed to decode referenced_attributes, not to cache this result.
     return ConvertRpcStatus(response.precondition().status());
   }
-  std::string signature;
+  utils::HashType signature;
   if (!referenced.Signature(attributes, "", &signature)) {
-    GOOGLE_LOG(ERROR) << "Response referenced mismatchs with request";
-    GOOGLE_LOG(ERROR) << "Request attributes: " << attributes.DebugString();
-    GOOGLE_LOG(ERROR) << "Referenced attributes: " << referenced.DebugString();
+    MIXER_WARN(
+        "Response referenced does not match request.  Request attributes: "
+        "%s.  Referenced attributes: %s",
+        attributes.DebugString().c_str(), referenced.DebugString().c_str());
     return ConvertRpcStatus(response.precondition().status());
   }
 
   std::lock_guard<std::mutex> lock(cache_mutex_);
-  std::string hash = referenced.Hash();
+  utils::HashType hash = referenced.Hash();
   if (referenced_map_.find(hash) == referenced_map_.end()) {
     referenced_map_[hash] = referenced;
-    GOOGLE_LOG(INFO) << "Add a new Referenced for check cache: "
-                     << referenced.DebugString();
+    MIXER_DEBUG("Add a new Referenced for check cache: %s",
+                referenced.DebugString().c_str());
   }
 
   CheckLRUCache::ScopedLookup lookup(cache_.get(), signature);

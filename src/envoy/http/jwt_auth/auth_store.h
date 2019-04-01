@@ -16,7 +16,8 @@
 #pragma once
 
 #include "common/common/logger.h"
-#include "envoy/config/filter/http/jwt_authn/v2alpha/config.pb.h"
+#include "common/protobuf/utility.h"
+#include "envoy/config/filter/http/jwt_auth/v2alpha1/config.pb.h"
 #include "envoy/server/filter_config.h"
 #include "envoy/thread_local/thread_local.h"
 #include "src/envoy/http/jwt_auth/pubkey_cache.h"
@@ -26,20 +27,24 @@ namespace Envoy {
 namespace Http {
 namespace JwtAuth {
 
+typedef std::shared_ptr<const ::istio::envoy::config::filter::http::jwt_auth::
+                            v2alpha1::JwtAuthentication>
+    JwtAuthenticationConstSharedPtr;
+
 // The JWT auth store object to store config and caches.
 // It only has pubkey_cache for now. In the future it will have token cache.
 // It is per-thread and stored in thread local.
 class JwtAuthStore : public ThreadLocal::ThreadLocalObject {
  public:
   // Load the config from envoy config.
-  JwtAuthStore(const ::envoy::config::filter::http::jwt_authn::v2alpha::
-                   JwtAuthentication& config)
-      : config_(config), pubkey_cache_(config_), token_extractor_(config_) {}
+  JwtAuthStore(JwtAuthenticationConstSharedPtr config)
+      : config_(config), pubkey_cache_(*config_), token_extractor_(*config_) {}
 
   // Get the Config.
-  const ::envoy::config::filter::http::jwt_authn::v2alpha::JwtAuthentication&
-  config() const {
-    return config_;
+  const ::istio::envoy::config::filter::http::jwt_auth::v2alpha1::
+      JwtAuthentication&
+      config() const {
+    return *config_;
   }
 
   // Get the pubkey cache.
@@ -50,8 +55,7 @@ class JwtAuthStore : public ThreadLocal::ThreadLocalObject {
 
  private:
   // Store the config.
-  const ::envoy::config::filter::http::jwt_authn::v2alpha::JwtAuthentication&
-      config_;
+  JwtAuthenticationConstSharedPtr config_;
   // The public key cache, indexed by issuer.
   PubkeyCache pubkey_cache_;
   // The object to extract token.
@@ -61,15 +65,19 @@ class JwtAuthStore : public ThreadLocal::ThreadLocalObject {
 // The factory to create per-thread auth store object.
 class JwtAuthStoreFactory : public Logger::Loggable<Logger::Id::config> {
  public:
-  JwtAuthStoreFactory(const ::envoy::config::filter::http::jwt_authn::v2alpha::
-                          JwtAuthentication& config,
+  JwtAuthStoreFactory(const ::istio::envoy::config::filter::http::jwt_auth::
+                          v2alpha1::JwtAuthentication& config,
                       Server::Configuration::FactoryContext& context)
-      : config_(config), tls_(context.threadLocal().allocateSlot()) {
-    tls_->set(
-        [this](Event::Dispatcher&) -> ThreadLocal::ThreadLocalObjectSharedPtr {
-          return std::make_shared<JwtAuthStore>(config_);
-        });
-    ENVOY_LOG(info, "Loaded JwtAuthConfig: {}", config_.DebugString());
+      : config_(std::make_shared<const ::istio::envoy::config::filter::http::
+                                     jwt_auth::v2alpha1::JwtAuthentication>(
+            config)),
+        tls_(context.threadLocal().allocateSlot()) {
+    tls_->set([config = this->config_](Event::Dispatcher&)
+                  -> ThreadLocal::ThreadLocalObjectSharedPtr {
+      return std::make_shared<JwtAuthStore>(config);
+    });
+    ENVOY_LOG(debug, "Loaded JwtAuthConfig: {}",
+              MessageUtil::getJsonStringFromMessage(*config_, true));
   }
 
   // Get per-thread auth store object.
@@ -77,7 +85,7 @@ class JwtAuthStoreFactory : public Logger::Loggable<Logger::Id::config> {
 
  private:
   // The auth config.
-  ::envoy::config::filter::http::jwt_authn::v2alpha::JwtAuthentication config_;
+  JwtAuthenticationConstSharedPtr config_;
   // Thread local slot to store per-thread auth store
   ThreadLocal::SlotPtr tls_;
 };

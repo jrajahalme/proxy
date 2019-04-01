@@ -44,8 +44,9 @@ envoy_cc_library(
     deps = [
         "//external:authentication_policy_config_cc_proto",
         "//src/envoy/http/jwt_auth:jwt_lib",
+        "//src/envoy/utils:filter_names_lib",
         "//src/envoy/utils:utils_lib",
-        "//src/istio/authn:context_proto",
+        "//src/istio/authn:context_proto_cc",
     ],
 )
 
@@ -63,8 +64,9 @@ envoy_cc_library(
         ":authenticator",
         "//external:authentication_policy_config_cc_proto",
         "//src/envoy/utils:authn_lib",
+        "//src/envoy/utils:filter_names_lib",
         "//src/envoy/utils:utils_lib",
-        "//src/istio/authn:context_proto",
+        "//src/istio/authn:context_proto_cc",
         "@envoy//source/exe:envoy_common_lib",
     ],
 )
@@ -74,7 +76,7 @@ envoy_cc_test_library(
     hdrs = ["test_utils.h"],
     repository = "@envoy",
     deps = [
-        "//src/istio/authn:context_proto",
+        "//src/istio/authn:context_proto_cc",
     ],
 )
 
@@ -85,6 +87,7 @@ envoy_cc_test(
     deps = [
         ":authenticator",
         ":test_utils",
+        "@envoy//test/mocks/http:http_mocks",
         "@envoy//test/test_common:utility_lib",
     ],
 )
@@ -96,6 +99,7 @@ envoy_cc_test(
     deps = [
         ":authenticator",
         ":test_utils",
+        "//src/envoy/utils:filter_names_lib",
         "@envoy//test/mocks/network:network_mocks",
         "@envoy//test/mocks/ssl:ssl_mocks",
         "@envoy//test/test_common:utility_lib",
@@ -158,6 +162,8 @@ envoy_cc_test(
     repository = "@envoy",
     deps = [
         ":filter_lib",
-        "@envoy//test/integration:http_integration_lib",
+        "//src/envoy/utils:filter_names_lib",
+        "@envoy//source/common/common:utility_lib",
+        "@envoy//test/integration:http_protocol_integration_lib",
     ],
 )

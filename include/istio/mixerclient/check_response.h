@@ -17,21 +17,20 @@
 #define ISTIO_MIXERCLIENT_CHECK_RESPONSE_H
 
 #include "google/protobuf/stubs/status.h"
+#include "mixer/v1/mixer.pb.h"
 
 namespace istio {
 namespace mixerclient {
 
-// The CheckResponseInfo holds response information in detail.
-struct CheckResponseInfo {
-  // Whether this check response is from cache.
-  bool is_check_cache_hit{false};
+// The CheckResponseInfo exposes policy and quota check details to the check
+// callbacks.
+class CheckResponseInfo {
+ public:
+  virtual ~CheckResponseInfo(){};
 
-  // Whether this quota response is from cache.
-  bool is_quota_cache_hit{false};
+  virtual const ::google::protobuf::util::Status& status() const = 0;
 
-  // The check and quota response status.
-  ::google::protobuf::util::Status response_status{
-      ::google::protobuf::util::Status::UNKNOWN};
+  virtual const ::istio::mixer::v1::RouteDirective& routeDirective() const = 0;
 };
 
 }  // namespace mixerclient

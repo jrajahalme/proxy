@@ -15,7 +15,7 @@
 
 #include "src/envoy/utils/authn.h"
 #include "common/protobuf/protobuf.h"
-#include "envoy/http/header_map.h"
+#include "include/istio/utils/attribute_names.h"
 #include "src/istio/authn/context.pb.h"
 #include "test/test_common/utility.h"
 
@@ -30,62 +30,80 @@ class AuthenticationTest : public testing::Test {
     test_result_.set_principal("foo");
     test_result_.set_peer_user("bar");
   }
-
-  const Http::LowerCaseString& GetHeaderLocation() {
-    return Authentication::GetHeaderLocation();
-  }
-  Http::TestHeaderMapImpl request_headers_{};
   Result test_result_;
 };
 
-TEST_F(AuthenticationTest, SaveEmptyResult) {
-  EXPECT_FALSE(Authentication::HasResultInHeader(request_headers_));
-  EXPECT_TRUE(Authentication::SaveResultToHeader(Result{}, &request_headers_));
-  EXPECT_TRUE(Authentication::HasResultInHeader(request_headers_));
-  const auto entry = request_headers_.get(GetHeaderLocation());
-  EXPECT_TRUE(entry != nullptr);
-  EXPECT_EQ("", entry->value().getStringView());
-}
+TEST_F(AuthenticationTest, SaveAuthAttributesToStruct) {
+  istio::authn::Result result;
+  ::google::protobuf::Struct data;
 
-TEST_F(AuthenticationTest, SaveSomeResult) {
-  EXPECT_TRUE(
-      Authentication::SaveResultToHeader(test_result_, &request_headers_));
-  const auto entry = request_headers_.get(GetHeaderLocation());
-  EXPECT_TRUE(entry != nullptr);
-  EXPECT_EQ("CgNmb28SA2Jhcg==", entry->value().getStringView());
-}
+  Authentication::SaveAuthAttributesToStruct(result, data);
+  EXPECT_TRUE(data.mutable_fields()->empty());
 
-TEST_F(AuthenticationTest, ResultAlreadyExist) {
-  request_headers_.addCopy(GetHeaderLocation(), "somedata");
-  EXPECT_TRUE(Authentication::HasResultInHeader(request_headers_));
-  EXPECT_FALSE(Authentication::SaveResultToHeader(Result{}, &request_headers_));
-  EXPECT_TRUE(Authentication::HasResultInHeader(request_headers_));
-  const auto entry = request_headers_.get(GetHeaderLocation());
-  EXPECT_TRUE(entry != nullptr);
-  EXPECT_EQ("somedata", entry->value().getStringView());
-}
+  result.set_principal("principal");
+  result.set_peer_user("cluster.local/sa/peeruser/ns/abc/");
+  auto origin = result.mutable_origin();
+  origin->add_audiences("audiences0");
+  origin->add_audiences("audiences1");
+  origin->set_presenter("presenter");
+  (*origin->mutable_claims()->mutable_fields())["groups"]
+      .mutable_list_value()
+      ->add_values()
+      ->set_string_value("group1");
+  (*origin->mutable_claims()->mutable_fields())["groups"]
+      .mutable_list_value()
+      ->add_values()
+      ->set_string_value("group2");
+  origin->set_raw_claims("rawclaim");
 
-TEST_F(AuthenticationTest, FetchResultNotExit) {
-  Result result;
-  EXPECT_FALSE(
-      Authentication::FetchResultFromHeader(request_headers_, &result));
-}
+  Authentication::SaveAuthAttributesToStruct(result, data);
+  EXPECT_FALSE(data.mutable_fields()->empty());
 
-TEST_F(AuthenticationTest, FetchResultBadFormat) {
-  request_headers_.addCopy(GetHeaderLocation(), "somedata");
-  EXPECT_TRUE(Authentication::HasResultInHeader(request_headers_));
-  Result result;
-  EXPECT_FALSE(
-      Authentication::FetchResultFromHeader(request_headers_, &result));
-}
+  EXPECT_EQ(data.fields()
+                .at(istio::utils::AttributeName::kRequestAuthPrincipal)
+                .string_value(),
+            "principal");
+  EXPECT_EQ(
+      data.fields().at(istio::utils::AttributeName::kSourceUser).string_value(),
+      "cluster.local/sa/peeruser/ns/abc/");
+  EXPECT_EQ(data.fields()
+                .at(istio::utils::AttributeName::kSourcePrincipal)
+                .string_value(),
+            "cluster.local/sa/peeruser/ns/abc/");
+  EXPECT_EQ(data.fields()
+                .at(istio::utils::AttributeName::kSourceNamespace)
+                .string_value(),
+            "abc");
+  EXPECT_EQ(data.fields()
+                .at(istio::utils::AttributeName::kRequestAuthAudiences)
+                .string_value(),
+            "audiences0");
+  EXPECT_EQ(data.fields()
+                .at(istio::utils::AttributeName::kRequestAuthPresenter)
+                .string_value(),
+            "presenter");
 
-TEST_F(AuthenticationTest, FetchResult) {
-  EXPECT_TRUE(
-      Authentication::SaveResultToHeader(test_result_, &request_headers_));
-  Result fetch_result;
-  EXPECT_TRUE(
-      Authentication::FetchResultFromHeader(request_headers_, &fetch_result));
-  EXPECT_TRUE(TestUtility::protoEqual(test_result_, fetch_result));
+  auto auth_claims =
+      data.fields().at(istio::utils::AttributeName::kRequestAuthClaims);
+  EXPECT_EQ(auth_claims.struct_value()
+                .fields()
+                .at("groups")
+                .list_value()
+                .values(0)
+                .string_value(),
+            "group1");
+  EXPECT_EQ(auth_claims.struct_value()
+                .fields()
+                .at("groups")
+                .list_value()
+                .values(1)
+                .string_value(),
+            "group2");
+
+  EXPECT_EQ(data.fields()
+                .at(istio::utils::AttributeName::kRequestAuthRawClaims)
+                .string_value(),
+            "rawclaim");
 }
 
 }  // namespace Utils

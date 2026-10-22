@@ -1,3 +1,8 @@
+load(
+    "@envoy//bazel:envoy_build_system.bzl",
+    "envoy_cc_binary",
+)
+
 # Copyright 2016 Istio Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,6 +19,7 @@
 #
 ################################################################################
 #
+load("@rules_pkg//:pkg.bzl", "pkg_tar")
 
 exports_files(["LICENSE"])
 
@@ -22,17 +28,25 @@ config_setting(
     values = {
         "cpu": "darwin",
     },
-    visibility = ["//visibility:public"],
 )
 
-genrule(
-    name = "deb_version",
-    srcs = [],
-    outs = ["deb_version.txt"],
-    cmd = "echo $${ISTIO_VERSION:-\"0.3.0-dev\"} > \"$@\"",
-    visibility = ["//visibility:public"],
+load("@envoy_build_config//:extensions_build_config.bzl", "OPENSSL_INCOMPATIBLE_CONTRIB_DEPS")
+
+envoy_cc_binary(
+    name = "envoy",
+    deps = [
+        "@envoy//source/exe:envoy_main_entry_lib",
+    ] + select({
+        "@envoy//bazel:using_openssl": [],
+        "//conditions:default": OPENSSL_INCOMPATIBLE_CONTRIB_DEPS,
+    }),
 )
 
-load("@io_bazel_rules_go//go:def.bzl", "go_prefix")
-
-go_prefix("istio.io/proxy")
+pkg_tar(
+    name = "envoy_tar",
+    srcs = [":envoy"],
+    extension = "tar.gz",
+    mode = "0755",
+    package_dir = "/usr/local/bin/",
+    tags = ["manual"],
+)

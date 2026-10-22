@@ -1,0 +1,81 @@
+# =====================================================================
+# Envoy specific Bazel build/test options.
+# =====================================================================
+
+# This file must be in sync with the upstream Envoy. Run `scripts/update_envoy.sh` to update it.
+import %workspace%/envoy.bazelrc
+
+# Istio override: increase JVM heap to 4GB for ARM64 builds (envoy.bazelrc sets 3GB)
+# The 3GB limit causes memory pressure during large downloads which breaks gRPC remote cache connections
+# Also increase direct buffer memory for large file transfers
+# See: https://github.com/istio/proxy/pull/6726
+startup --host_jvm_args=-Xmx4g
+startup --host_jvm_args=-XX:MaxDirectMemorySize=4g
+
+# Overrides workspace_status_command
+build --workspace_status_command=bazel/bazel_get_workspace_status
+build:remote --remote_timeout=7200
+# ========================================
+# Istio specific Bazel build/test options.
+# ========================================
+
+# This prevents Bazel from trying to detect the system C++ toolchain, which may be incompatible with Envoy's build.
+common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+
+# put /usr/local/bin before /usr/bin to avoid picking up wrong python3.6 when building envoy.tls.key_providers.cryptomb
+build:linux --action_env=PATH=/usr/local/bin:/bin:/usr/bin
+
+# Need for CI image to pickup docker-credential-gcloud, PATH is fixed in rbe-toolchain-* configs.
+build:remote-ci --action_env=PATH=/usr/local/google-cloud-sdk/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/llvm/bin
+# These flags reduce bazel memory consumption at the cost of slower incremental builds
+# CI builds are not incremental, since we build with a clean state, so the performance impact is not
+# relevant for CI
+build:remote-ci --discard_analysis_cache --nokeep_state_after_build --notrack_incremental_state
+
+# Apply memory optimization flags to all remote cache builds
+build:remote --discard_analysis_cache --nokeep_state_after_build --notrack_incremental_state
+
+# Enable path normalization by default.
+# See: https://github.com/envoyproxy/envoy/pull/6519
+build --define path_normalization_by_default=true
+
+build:macos --define tcmalloc=disabled
+
+# Build with embedded V8-based WebAssembly runtime.
+build --@proxy-wasm-cpp-host//bazel:engine=v8
+
+# Build Proxy-WASM plugins as native extensions.
+build --copt -DNULL_PLUGIN
+
+# Release builds without debug symbols.
+build:release -c opt
+build:release --strip=always
+
+# Release builds with debug symbols
+build:release-symbol -c opt
+
+# Debug builds
+build:debug -c dbg
+
+# Add compile option for all C++ files
+# TODO(kuat) re-enable after fixing upstream dd/tracing-lib.
+# build --cxxopt -Wnon-virtual-dtor
+build --cxxopt -Wformat
+build --cxxopt -Wformat-security
+
+# CI sanitizer configuration
+#
+build:clang-asan-ci --config=asan
+build:clang-asan-ci --linkopt='-L/usr/lib/llvm/lib/x86_64-unknown-linux-gnu'
+build:clang-asan-ci --linkopt='-Wl,-rpath,/usr/lib/llvm/lib/x86_64-unknown-linux-gnu'
+build:clang-asan-ci --linkopt='-L/usr/lib/llvm/lib/clang/14.0.0/lib/x86_64-unknown-linux-gnu'
+
+build:clang-tsan-ci --config=tsan
+build:clang-tsan-ci --linkopt=-L/opt/libcxx_tsan/lib
+build:clang-tsan-ci --linkopt=-Wl,-rpath,/opt/libcxx_tsan/lib
+
+# get from https://github.com/Homebrew/homebrew-core/blob/master/Formula/e/envoy.rb
+build:macos --cxxopt=-Wno-range-loop-analysis
+build:macos --host_cxxopt=-Wno-range-loop-analysis
+build:macos --cxxopt=-Wno-deprecated-declarations
+build:macos --host_cxxopt=-Wno-deprecated-declarations
